@@ -1,0 +1,163 @@
+import { spawn } from 'child_process';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const BIN_DIR = path.join(__dirname, '..', 'bin');
+const CLIPS_DIR = path.join(__dirname, '..', 'clips');
+const localYtdlp = path.join(BIN_DIR, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+const YTDLP_PATH = fs.existsSync(localYtdlp) ? localYtdlp : 'yt-dlp';
+
+// Ensure clips directory exists
+if (!fs.existsSync(CLIPS_DIR)) {
+  fs.mkdirSync(CLIPS_DIR, { recursive: true });
+}
+
+export function formatHms(secs) {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = Math.floor(secs % 60);
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+export function isClipReady(clipId) {
+  const filename = `${clipId}.mp4`;
+  const outputPath = path.join(CLIPS_DIR, filename);
+  return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10000;
+}
+
+/**
+ * Cuts a real, standalone MP4 clip from YouTube using yt-dlp + ffmpeg
+ */
+export async function renderClip({ videoId, startTime, endTime, title = 'clip' }) {
+  const startSec = Math.max(0, Math.floor(startTime));
+  const endSec = Math.max(startSec + 5, Math.floor(endTime));
+  const duration = endSec - startSec;
+
+  const clipId = `clip_${videoId}_${startSec}_${endSec}`;
+  const filename = `${clipId}.mp4`;
+  const outputPath = path.join(CLIPS_DIR, filename);
+
+  // Return cached clip if already rendered
+  if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10000) {
+    console.log(`[Cliper Cache Hit] Returning existing clip: ${filename}`);
+    return {
+      success: true,
+      clipId,
+      filename,
+      duration,
+      outputPath,
+      streamUrl: `/api/clip/stream/${filename}`,
+      downloadUrl: `/api/clip/download/${filename}?title=${encodeURIComponent(title)}`,
+      cached: true
+    };
+  }
+
+  const startHms = formatHms(startSec);
+  const endHms = formatHms(endSec);
+  const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+
+  console.log(`[Cliper Render] Generating cut clip: ${startHms} to ${endHms} (${duration}s)`);
+
+  const args = [
+    '--ffmpeg-location', BIN_DIR,
+    '--js-runtimes', 'node',
+    // Maximum quality possible: 1080p/4K AVC1/H.264 + AAC audio or best available merged into MP4
+    '-f', 'bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
+    '--merge-output-format', 'mp4',
+    '--download-sections', `*${startHms}-${endHms}`,
+    '--no-playlist',
+    '--no-warnings',
+    '-o', outputPath,
+    videoUrl
+  ];
+
+  return new Promise((resolve, reject) => {
+    const proc = spawn(YTDLP_PATH, args, {
+      windowsHide: true
+    });
+
+    let stdoutData = '';
+    let stderrData = '';
+
+    proc.stdout.on('data', (d) => {
+      stdoutData += d.toString();
+    });
+
+    proc.stderr.on('data', (d) => {
+      stderrData += d.toString();
+    });
+
+    proc.on('close', (code) => {
+      if (code === 0 && fs.existsSync(outputPath)) {
+        console.log(`[Cliper Render Success] Created: ${filename}`);
+        resolve({
+          success: true,
+          clipId,
+          filename,
+          duration,
+          outputPath,
+          streamUrl: `/api/clip/stream/${filename}`,
+          downloadUrl: `/api/clip/download/${filename}?title=${encodeURIComponent(title)}`,
+          cached: false
+        });
+      } else {
+        console.error(`[Cliper Render Error] Exit code ${code}:`, stderrData || stdoutData);
+        reject(new Error(`Failed to generate video clip: ${stderrData || stdoutData || 'Unknown error'}`));
+      }
+    });
+
+    proc.on('error', (err) => {
+      console.error('[Cliper Spawn Error]:', err);
+      reject(err);
+    });
+  });
+}
+
+/**
+ * Cuts clips with concurrency control (2 workers at a time)
+ */
+export async function cutClipsBatch(videoId, clips, concurrency = 2) {
+  const results = new Array(clips.length);
+  let currentIndex = 0;
+
+  async function worker() {
+    while (currentIndex < clips.length) {
+      const idx = currentIndex++;
+      const c = clips[idx];
+      try {
+        const rendered = await renderClip({
+          videoId,
+          startTime: c.startTime,
+          endTime: c.endTime,
+          title: c.title
+        });
+        results[idx] = {
+          ...c,
+          ready: true,
+          streamUrl: rendered.streamUrl,
+          downloadUrl: rendered.downloadUrl,
+          clipId: rendered.clipId
+        };
+      } catch (err) {
+        console.error(`[Cliper Batch Cut Error] Clip ${c.id}:`, err.message);
+        results[idx] = {
+          ...c,
+          ready: false,
+          error: err.message
+        };
+      }
+    }
+  }
+
+  const workers = [];
+  for (let i = 0; i < Math.min(concurrency, clips.length); i++) {
+    workers.push(worker());
+  }
+
+  await Promise.all(workers);
+  return results;
+}

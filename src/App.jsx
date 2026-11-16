@@ -16,12 +16,13 @@ import {
   RefreshCw,
   SlidersHorizontal,
   ChevronRight,
-  Zap
+  Zap,
+  Timer,
+  Download,
+  Film
 } from 'lucide-react';
 import WaveformChart from './components/WaveformChart.jsx';
-import ClipCard from './components/ClipCard.jsx';
-import ClipPlayer from './components/ClipPlayer.jsx';
-import ExportModal from './components/ExportModal.jsx';
+import DirectClipCard from './components/DirectClipCard.jsx';
 
 export default function App() {
   const [url, setUrl] = useState('');
@@ -29,8 +30,6 @@ export default function App() {
   const [loadingStep, setLoadingStep] = useState(0);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
-  const [activeClip, setActiveClip] = useState(null);
-  const [exportClip, setExportClip] = useState(null);
   const [samples, setSamples] = useState([]);
 
   // Fetch samples on mount
@@ -51,9 +50,9 @@ export default function App() {
     setError(null);
     setLoadingStep(1);
 
-    // Step animation for smooth user experience
-    const t1 = setTimeout(() => setLoadingStep(2), 700);
-    const t2 = setTimeout(() => setLoadingStep(3), 1500);
+    // Step animation for smooth progress feedback
+    const t1 = setTimeout(() => setLoadingStep(2), 600);
+    const t2 = setTimeout(() => setLoadingStep(3), 1400);
 
     try {
       const res = await fetch('/api/analyze', {
@@ -67,47 +66,16 @@ export default function App() {
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to analyze video');
+        throw new Error(data.error || 'Failed to analyze and cut video clips');
       }
 
       setResult(data);
-      if (data.analysis.clips && data.analysis.clips.length > 0) {
-        setActiveClip(data.analysis.clips[0]);
-      }
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
       setLoadingStep(0);
     }
-  };
-
-  const handleUpdateActiveClip = (updated) => {
-    setActiveClip(updated);
-    if (result && result.analysis && result.analysis.clips) {
-      const newClips = result.analysis.clips.map(c => (c.id === updated.id ? updated : c));
-      setResult({
-        ...result,
-        analysis: {
-          ...result.analysis,
-          clips: newClips
-        }
-      });
-    }
-  };
-
-  const handleSeekFromChart = (seekSec) => {
-    if (!activeClip) return;
-    // Reposition active clip around this timestamp
-    const half = Math.round(activeClip.duration / 2);
-    const newStart = Math.max(0, seekSec - half);
-    const newEnd = newStart + activeClip.duration;
-    handleUpdateActiveClip({
-      ...activeClip,
-      startTime: newStart,
-      endTime: newEnd,
-      peakTime: seekSec
-    });
   };
 
   const formatDuration = (secs) => {
@@ -133,17 +101,17 @@ export default function App() {
                   Cliper
                 </h1>
                 <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 uppercase tracking-wide">
-                  Heatmap AI
+                  Dynamic Clip Cutter
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400 font-medium">YouTube Most Replayed Highlight Extractor</p>
+              <p className="text-[11px] text-slate-400 font-medium">Extracts All Highlight Moments in Maximum 1080p HD Quality (Variable Lengths)</p>
             </div>
           </div>
 
           <div className="flex items-center gap-3">
             <span className="hidden sm:flex items-center gap-1.5 text-xs text-slate-400 px-3 py-1 rounded-full bg-slate-900 border border-slate-800">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              Live Heatseeker Engine Ready
+              <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
+              Max Quality (1080p Full HD) • Variable Length (12s–45s)
             </span>
           </div>
         </div>
@@ -154,19 +122,19 @@ export default function App() {
         {/* Search & URL Input Hero */}
         <section className="flex flex-col items-center text-center max-w-3xl mx-auto w-full gap-4 pt-2">
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-purple-950/50 border border-purple-800/40 text-purple-300 text-xs font-semibold shadow-inner">
-            <Zap className="w-3.5 h-3.5 text-purple-400" />
-            Turn 2-Hour Videos & Streams into Viral 30-Second Clips in Seconds
+            <Zap className="w-3.5 h-3.5 text-cyan-400" />
+            Maximum Quality (1080p Full HD) • Variable Lengths (12s–45s) • Direct MP4 Downloads
           </div>
 
           <h2 className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">
-            Find the <span className="bg-gradient-to-r from-purple-400 via-pink-400 to-amber-400 bg-clip-text text-transparent">Most Replayed</span> Parts of Any YouTube Video
+            Extract <span className="bg-gradient-to-r from-purple-400 via-pink-400 to-amber-400 bg-clip-text text-transparent">All Viral Highlight Moments</span> in Maximum Quality
           </h2>
           <p className="text-sm text-slate-400 max-w-xl">
-            Paste any YouTube video or live stream link. Cliper extracts YouTube's raw Heatseeker graph, detects local climax peaks, and creates viral short-form clips instantly.
+            Paste any YouTube video or stream link. Cliper finds all interesting peaks across the video, cuts them into variable-length standalone video clips (12s to 45s) rendered in pristine 1080p Full HD, and hands you the ready-to-download MP4s!
           </p>
 
           {/* Input Box */}
-          <div className="w-full mt-2 relative">
+          <div className="w-full mt-2 relative flex flex-col gap-3">
             <div className="relative flex items-center bg-[#101421] border-2 border-slate-700/80 focus-within:border-purple-500 rounded-2xl p-1.5 shadow-2xl transition-all">
               <div className="pl-3 text-slate-400">
                 <Search className="w-5 h-5 text-purple-400" />
@@ -182,17 +150,17 @@ export default function App() {
               <button
                 onClick={() => handleAnalyze()}
                 disabled={loading || !url.trim()}
-                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-cyan-500 hover:from-purple-500 hover:to-cyan-400 text-white font-semibold text-sm shadow-lg shadow-purple-900/40 transition-all flex items-center gap-2 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-cyan-500 hover:from-purple-500 hover:to-cyan-400 text-white font-bold text-sm shadow-lg shadow-purple-900/40 transition-all flex items-center gap-2 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {loading ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Analyzing...</span>
+                    <span>Cutting Clips...</span>
                   </>
                 ) : (
                   <>
-                    <Sparkles className="w-4 h-4" />
-                    <span>Extract Clips</span>
+                    <Scissors className="w-4 h-4" />
+                    <span>Cut & Give Me All Clips</span>
                   </>
                 )}
               </button>
@@ -200,8 +168,8 @@ export default function App() {
 
             {/* Quick Sample Buttons */}
             {samples.length > 0 && (
-              <div className="flex flex-wrap items-center justify-center gap-2 mt-3 text-xs">
-                <span className="text-slate-500">Quick Test:</span>
+              <div className="flex flex-wrap items-center justify-center gap-2 text-xs">
+                <span className="text-slate-500">Try Sample:</span>
                 {samples.map((s, idx) => (
                   <button
                     key={idx}
@@ -222,15 +190,15 @@ export default function App() {
         {/* Loading Progress State */}
         {loading && (
           <div className="w-full max-w-xl mx-auto glass-panel p-6 rounded-2xl border border-purple-500/40 shadow-2xl flex flex-col items-center gap-4 animate-fadeIn">
-            <div className="w-12 h-12 rounded-full border-4 border-purple-500/20 border-t-purple-500 animate-spin flex items-center justify-center">
-              <Scissors className="w-5 h-5 text-purple-400" />
+            <div className="w-14 h-14 rounded-full border-4 border-purple-500/20 border-t-purple-500 animate-spin flex items-center justify-center">
+              <Scissors className="w-6 h-6 text-purple-400" />
             </div>
             <div className="text-center">
-              <h3 className="font-bold text-slate-100 text-base">Analyzing Video Highlights...</h3>
+              <h3 className="font-bold text-slate-100 text-base">Detecting & Slicing All Highlight Clips...</h3>
               <p className="text-xs text-slate-400 mt-1">
-                {loadingStep === 1 && 'Connecting to YouTube & fetching metadata...'}
-                {loadingStep === 2 && 'Extracting YouTube Heatseeker ("Most Replayed") graph points...'}
-                {loadingStep === 3 && 'Running peak detection and framing optimal 15-60s clip windows...'}
+                {loadingStep === 1 && 'Scanning timeline for all peak replay & high-energy moments...'}
+                {loadingStep === 2 && 'Calculating natural variable durations (12s to 45s) for each moment...'}
+                {loadingStep === 3 && 'Slicing video files into standalone MP4s ready to download...'}
               </p>
             </div>
 
@@ -248,13 +216,13 @@ export default function App() {
           <div className="max-w-2xl mx-auto w-full p-4 rounded-xl bg-red-950/40 border border-red-500/40 text-red-200 flex items-start gap-3">
             <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
             <div className="text-xs">
-              <strong className="block font-semibold mb-0.5">Could not process video:</strong>
+              <strong className="block font-semibold mb-0.5">Could not cut clips:</strong>
               {error}
             </div>
           </div>
         )}
 
-        {/* Results Dashboard */}
+        {/* Results: Direct Cut Clips Gallery! */}
         {result && !loading && (
           <div className="flex flex-col gap-6 animate-fadeIn">
             {/* Video Overview Bar */}
@@ -274,7 +242,7 @@ export default function App() {
                     {result.video.duration > 0 && (
                       <span className="flex items-center gap-1">
                         <Clock className="w-3.5 h-3.5 text-slate-500" />
-                        {formatDuration(result.video.duration)}
+                        Full Video: {formatDuration(result.video.duration)}
                       </span>
                     )}
                     {result.video.viewCount && (
@@ -287,67 +255,50 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Status Badges */}
+              {/* Status Badge */}
               <div className="flex items-center gap-2 shrink-0">
-                {result.analysis.hasHeatmap ? (
-                  <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 text-xs font-semibold">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                    Heatmap Verified ({result.analysis.dataPointsCount} pts)
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-950/60 border border-amber-500/40 text-amber-300 text-xs font-semibold">
-                    <Radio className="w-4 h-4 text-amber-400 animate-pulse" />
-                    Smart Segments Mode
-                  </span>
-                )}
+                <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 text-xs font-semibold">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  {result.analysis.clips.length} Standalone Highlight Clips Available
+                </span>
               </div>
             </div>
 
-            {/* Interactive Heatmap Waveform Visualizer */}
-            <div className="glass-panel p-5 rounded-2xl border border-slate-800/90 shadow-xl">
-              <WaveformChart
-                heatmap={result.analysis.heatmap}
-                duration={result.video.duration}
-                activeClip={activeClip}
-                onSeek={handleSeekFromChart}
-              />
-            </div>
-
-            {/* Main Interactive Studio Grid (Player on Left, Clip Ranks on Right) */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-              {/* Left Column: Player & Aspect Framing (7 cols) */}
-              <div className="lg:col-span-7 flex flex-col gap-4">
-                <ClipPlayer
-                  videoId={result.video.id}
-                  clip={activeClip}
-                  onUpdateClip={handleUpdateActiveClip}
-                  onOpenExport={(clip) => setExportClip(clip)}
+            {/* Interactive Heatmap Waveform (Visual Reference Only) */}
+            {result.analysis.heatmap && result.analysis.heatmap.length > 0 && (
+              <div className="glass-panel p-4 rounded-2xl border border-slate-800/90 shadow-xl">
+                <WaveformChart
+                  heatmap={result.analysis.heatmap}
+                  duration={result.video.duration}
+                  activeClip={result.analysis.clips[0]}
                 />
               </div>
+            )}
 
-              {/* Right Column: Ranked Clips Showcase (5 cols) */}
-              <div className="lg:col-span-5 flex flex-col gap-3">
-                <div className="flex items-center justify-between pb-1">
-                  <div className="flex items-center gap-2">
-                    <Flame className="w-4 h-4 text-amber-400" />
-                    <h3 className="font-bold text-slate-200 text-sm">
-                      Top Detected Clips ({result.analysis.clips.length})
-                    </h3>
-                  </div>
-                  <span className="text-xs text-slate-500">Ranked by Replay Peaks</span>
+            {/* DIRECT EDITED CLIPS GALLERY */}
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center justify-between pb-1">
+                <div className="flex items-center gap-2">
+                  <Film className="w-5 h-5 text-purple-400" />
+                  <h3 className="font-extrabold text-slate-100 text-lg">
+                    Your Cut Video Clips ({result.analysis.clips.length})
+                  </h3>
                 </div>
+                <span className="text-xs text-slate-400">
+                  Variable lengths (12s to 45s) • No YouTube embeds • Watch or download directly
+                </span>
+              </div>
 
-                <div className="flex flex-col gap-3 max-h-[640px] overflow-y-auto pr-1">
-                  {result.analysis.clips.map((clip) => (
-                    <ClipCard
-                      key={clip.id}
-                      clip={clip}
-                      isActive={activeClip?.id === clip.id}
-                      onSelect={(selected) => setActiveClip(selected)}
-                      onExport={(selected) => setExportClip(selected)}
-                    />
-                  ))}
-                </div>
+              {/* Grid of Cut Clips */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {result.analysis.clips.map((clip, index) => (
+                  <DirectClipCard
+                    key={clip.id || index}
+                    clip={clip}
+                    rank={index + 1}
+                    videoId={result.video.id}
+                  />
+                ))}
               </div>
             </div>
           </div>
@@ -360,9 +311,9 @@ export default function App() {
               <div className="w-9 h-9 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center font-bold text-sm">
                 1
               </div>
-              <h3 className="font-bold text-slate-200 text-sm">Heatseeker Analysis</h3>
+              <h3 className="font-bold text-slate-200 text-sm">Finds All Interesting Moments</h3>
               <p className="text-xs text-slate-400 leading-relaxed">
-                Extracts YouTube's 100 timeline intensity data points to identify exact moments where viewers replay, rewind, and re-watch.
+                Doesn't stop at just 4 clips. Scans the entire video and extracts 8 to 10+ peak moments across the whole video.
               </p>
             </div>
 
@@ -370,40 +321,30 @@ export default function App() {
               <div className="w-9 h-9 rounded-xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center font-bold text-sm">
                 2
               </div>
-              <h3 className="font-bold text-slate-200 text-sm">Dynamic Peak Windowing</h3>
+              <h3 className="font-bold text-slate-200 text-sm">Natural Variable Lengths</h3>
               <p className="text-xs text-slate-400 leading-relaxed">
-                Automatically calculates the hook lead-in context and reaction aftermath, generating perfect 15-to-60 second viral clip boundaries.
+                Clips adjust naturally to the moment (12s, 19s, 28s, 36s, 42s) while staying strictly under 45-50s.
               </p>
             </div>
 
             <div className="glass-card p-5 rounded-2xl border border-slate-800/80 flex flex-col gap-2">
-              <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold text-sm">
+              <div className="w-9 h-9 rounded-xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center font-bold text-sm">
                 3
               </div>
-              <h3 className="font-bold text-slate-200 text-sm">9:16 Vertical Preview & Export</h3>
+              <h3 className="font-bold text-slate-200 text-sm">Pristine Maximum Quality</h3>
               <p className="text-xs text-slate-400 leading-relaxed">
-                Preview in phone aspect ratio for Shorts, TikTok, and Reels. Export timestamps or 1-click ultra-fast 1080p rendering commands.
+                Renders and cuts in maximum available source quality (1080p 60fps Full HD) with studio AAC audio, 9:16 Shorts framing, and 1-click MP4 download.
               </p>
             </div>
           </section>
         )}
       </main>
 
-      {/* Export Modal */}
-      {exportClip && result && (
-        <ExportModal
-          isOpen={Boolean(exportClip)}
-          onClose={() => setExportClip(null)}
-          clip={exportClip}
-          video={result.video}
-        />
-      )}
-
       {/* Footer */}
       <footer className="border-t border-slate-800/80 bg-[#080b12] py-6 mt-auto text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <span>Cliper • AI Most Replayed YouTube Highlight Generator</span>
-          <span>Works with YouTube Videos, Shorts & Live Stream VODs</span>
+          <span>Cliper • Standalone Video Clip Generator</span>
+          <span>Variable Lengths (12s to 45s) • Direct MP4 Clips</span>
         </div>
       </footer>
     </div>

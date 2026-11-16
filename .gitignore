@@ -5,3 +5,14 @@ dist-ssr
 .env
 .DS_Store
 Thumbs.db
+
+# Executables & Binaries (exceeds GitHub 100MB limit)
+bin/
+*.exe
+
+# Downloaded & Cached Clips
+clips/
+*.mp4
+*.mkv
+*.webm
+*.part
