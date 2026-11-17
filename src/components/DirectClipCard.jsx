@@ -190,19 +190,30 @@ export default function DirectClipCard({ clip, rank, videoId }) {
           <div className="p-6 text-center text-xs text-slate-400 flex flex-col items-center gap-3">
             {cutting ? (
               <>
-                <RefreshCw className="w-6 h-6 text-purple-400 animate-spin" />
-                <span className="font-semibold text-purple-300">Slicing {clip.duration}s video clip...</span>
+                <RefreshCw className="w-7 h-7 text-cyan-400 animate-spin" />
+                <div className="flex flex-col items-center gap-0.5">
+                  <span className="font-bold text-cyan-300">Rendering 1080p HD Clip ({clip.duration}s)...</span>
+                  <span className="text-[11px] text-slate-400">Extracting stream chunk & merging audio...</span>
+                </div>
               </>
             ) : (
               <>
-                <Scissors className="w-6 h-6 text-slate-500" />
-                <span className="text-slate-400">Queueing {clip.duration}s clip in background</span>
+                <div className="w-10 h-10 rounded-full bg-purple-500/10 border border-purple-500/20 flex items-center justify-center">
+                  <span className="w-3 h-3 rounded-full bg-purple-400 animate-ping"></span>
+                </div>
+                <div className="flex flex-col items-center gap-1">
+                  <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-purple-950/60 border border-purple-700/50 text-purple-300 text-[11px] font-semibold">
+                    <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse"></span>
+                    <span>Queued #{rank} • Variable {clip.duration}s</span>
+                  </div>
+                  <span className="text-[11px] text-slate-400">Auto-rendering in background queue...</span>
+                </div>
                 <button
                   onClick={handleManualCut}
-                  className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs shadow-md transition-all flex items-center gap-1.5"
+                  className="px-3.5 py-1.5 rounded-xl bg-purple-600/90 hover:bg-purple-500 text-white font-bold text-xs shadow-md transition-all flex items-center gap-1.5 hover:scale-105"
                 >
                   <Scissors className="w-3.5 h-3.5" />
-                  Cut Now (2s)
+                  Cut Priority Now
                 </button>
               </>
             )}
@@ -235,8 +246,17 @@ export default function DirectClipCard({ clip, rank, videoId }) {
             disabled={cutting}
             className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-purple-600/80 hover:bg-purple-600 text-white font-bold text-xs shadow-md transition-all text-center disabled:opacity-50"
           >
-            <Scissors className="w-3.5 h-3.5" />
-            {cutting ? 'Cutting...' : `Ready Clip (${clip.duration}s)`}
+            {cutting ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                <span>Cutting ({clip.duration}s)...</span>
+              </>
+            ) : (
+              <>
+                <Scissors className="w-3.5 h-3.5" />
+                <span>In Queue • Prioritize ({clip.duration}s)</span>
+              </>
+            )}
           </button>
         )}
       </div>

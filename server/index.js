@@ -19,14 +19,19 @@ app.use(express.json());
 // Sample videos for quick 1-click testing
 const SAMPLES = [
   {
-    name: '🎵 Rick Astley - Never Gonna Give You Up',
-    url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-    type: 'Music Video'
+    name: '🔴 Live Stream (Al Jazeera English)',
+    url: 'https://www.youtube.com/watch?v=gCNeDWCI0vo',
+    type: 'Live Stream'
   },
   {
     name: '🔥 Samay Raina Roast',
     url: 'https://www.youtube.com/watch?v=UlK_W9PLSjw',
     type: 'Comedy Video'
+  },
+  {
+    name: '🎵 Rick Astley - Never Gonna Give You Up',
+    url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+    type: 'Music Video'
   },
   {
     name: '🎮 MrBeast Squid Game Challenge',
@@ -59,9 +64,9 @@ app.post('/api/analyze', async (req, res) => {
     const allClips = analysis.clips;
     console.log(`[Cliper] Found ${allClips.length} highlight moments for ${videoId}`);
 
-    // Pre-cut the top 5 clips with 2 concurrent workers (takes ~3s)
-    const priorityBatch = allClips.slice(0, 5);
-    const backgroundBatch = allClips.slice(5);
+    // Fast, snappy delivery: Pre-cut top 2 clips so user gets immediate playback in ~4s
+    const priorityBatch = allClips.slice(0, 2);
+    const backgroundBatch = allClips.slice(2);
 
     console.log(`[Cliper] Cutting priority batch (${priorityBatch.length} clips)...`);
     const renderedPriority = await cutClipsBatch(videoId, priorityBatch, 2);
@@ -83,14 +88,14 @@ app.post('/api/analyze', async (req, res) => {
       })
     ];
 
-    // Trigger remaining clips in background queue so they are ready when user scrolls down
+    // Trigger remaining clips in background queue so they are ready one by one
     if (backgroundBatch.length > 0) {
       setTimeout(() => {
-        console.log(`[Cliper Background] Cutting remaining ${backgroundBatch.length} clips...`);
+        console.log(`[Cliper Background Queue] Processing ${backgroundBatch.length} remaining clips...`);
         cutClipsBatch(videoId, backgroundBatch, 2).catch(e =>
-          console.error('[Cliper Background Error]:', e.message)
+          console.error('[Cliper Background Queue Error]:', e.message)
         );
-      }, 100);
+      }, 50);
     }
 
     return res.json({
@@ -102,6 +107,7 @@ app.post('/api/analyze', async (req, res) => {
         duration: videoData.duration,
         viewCount: videoData.viewCount,
         isLive: videoData.isLive,
+        startTimestamp: videoData.startTimestamp,
         thumbnail: videoData.thumbnail,
         maxResThumbnail: videoData.maxResThumbnail
       },
@@ -109,7 +115,8 @@ app.post('/api/analyze', async (req, res) => {
         hasHeatmap: analysis.hasHeatmap,
         dataPointsCount: analysis.dataPointsCount,
         heatmap: analysis.heatmap,
-        clips: fullClipsList
+        clips: fullClipsList,
+        isLiveStream: Boolean(analysis.isLiveStream || videoData.isLive)
       }
     });
   } catch (err) {

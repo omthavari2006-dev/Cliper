@@ -97,6 +97,7 @@ export async function fetchYouTubeData(videoId) {
   let lengthSeconds = 0;
   let viewCount = '0';
   let isLive = false;
+  let startTimestamp = null;
 
   // Try extracting videoDetails JSON
   const detailsMatch = html.match(/"videoDetails":\s*({.+?}),"playerConfig"/);
@@ -107,13 +108,66 @@ export async function fetchYouTubeData(videoId) {
       author = details.author || author;
       lengthSeconds = parseInt(details.lengthSeconds || '0', 10);
       viewCount = details.viewCount || viewCount;
-      isLive = Boolean(details.isLiveContent || details.isLive);
+      if (details.isLiveContent || details.isLive) isLive = true;
     } catch {}
   }
 
   if (title === 'YouTube Video') {
     const titleTag = html.match(/<title>(.*?) - YouTube<\/title>/);
     if (titleTag) title = titleTag[1];
+  }
+
+  if (author === 'Creator') {
+    const authorMatch = html.match(/"author":\s*"([^"]+)"/) || html.match(/"ownerChannelName":\s*"([^"]+)"/);
+    if (authorMatch) author = authorMatch[1];
+  }
+
+  // Detect Live Status
+  if (
+    html.includes('"isLive":true') ||
+    html.includes('"isLiveNow":true') ||
+    html.includes('"liveBroadcastDetails"') ||
+    html.includes('BADGE_STYLE_TYPE_LIVE_NOW') ||
+    html.includes('"style":"LIVE"')
+  ) {
+    isLive = true;
+  }
+
+  // Detect Live Stream Start Timestamp
+  const startMatch = html.match(/"startTimestamp":\s*"([^"]+)"/);
+  if (startMatch) {
+    startTimestamp = startMatch[1];
+  }
+
+  if (isLive) {
+    let elapsedSec = 0;
+    if (startTimestamp) {
+      const startMs = new Date(startTimestamp).getTime();
+      if (!isNaN(startMs)) {
+        elapsedSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+      }
+    }
+
+    if (elapsedSec > 0) {
+      // If stream has been running for days (e.g. > 2 hours), cap to active DVR buffer (3600-7200s)
+      if (elapsedSec > 7200) {
+        lengthSeconds = 7200; // 2 hours of active rewindable DVR
+      } else {
+        lengthSeconds = elapsedSec;
+      }
+    } else {
+      lengthSeconds = 1800; // default 30 mins window
+    }
+
+    // Viewers for live stream
+    const viewersMatch = html.match(/"viewCount":\s*{\s*"runs":\s*\[{\s*"text":\s*"([^"]+)"/);
+    if (viewersMatch) {
+      viewCount = `${viewersMatch[1]} watching now`;
+    } else {
+      viewCount = 'Live Stream';
+    }
+  } else {
+    viewCount = Number(viewCount).toLocaleString();
   }
 
   // 2. Extract Heatmap Data
@@ -189,8 +243,9 @@ export async function fetchYouTubeData(videoId) {
     title,
     author,
     duration: lengthSeconds,
-    viewCount: Number(viewCount).toLocaleString(),
+    viewCount: typeof viewCount === 'string' && viewCount.includes('watching') ? viewCount : Number(viewCount || 0).toLocaleString(),
     isLive,
+    startTimestamp,
     thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
     maxResThumbnail: `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
     rawMarkers,
@@ -203,7 +258,7 @@ export async function fetchYouTubeData(videoId) {
  * Yields clips of variable durations (e.g. 14s, 22s, 31s, 42s - strictly capped under 45-50s)
  */
 export function analyzeClips(videoData, options = {}) {
-  const { rawMarkers, duration, chapters, title } = videoData;
+  const { rawMarkers, duration, chapters, title, isLive } = videoData;
 
   const points = (rawMarkers || []).map(m => ({
     startSec: Math.round(Number(m.startMillis) / 1000),
@@ -367,7 +422,62 @@ export function analyzeClips(videoData, options = {}) {
     };
   }
 
-  // SCENARIO 2: Video does NOT have heatmap yet (e.g. Samay Raina roast, new stream, fresh VOD)
+  // SCENARIO 2: LIVE STREAM (Ongoing or Active Broadcast)
+  // Generates 14 variable-length highlight moments distributed from stream start up to the current submission moment
+  if (isLive) {
+    const totalDuration = duration > 0 ? duration : 1800;
+    const liveClips = [];
+
+    const liveTemplates = [
+      { name: '🔴 Live Stream Start & Opening Hook', ratio: 0.02, duration: 18, badge: 'Live Intro', reason: 'Opening broadcast hook & stream setup' },
+      { name: '⚡ Early Hype & Audience Greeting', ratio: 0.08, duration: 24, badge: 'Early Surge', reason: 'Warm-up chatter and first live energy wave' },
+      { name: '🎯 First Big Topic / Match Action', ratio: 0.15, duration: 32, badge: 'High Action', reason: 'First major segment milestone and reaction' },
+      { name: '🔥 Hilarious Stream Banter', ratio: 0.23, duration: 26, badge: 'Stream Banter', reason: 'High-velocity banter and live chat laughter' },
+      { name: '💥 Intense Mid-Stream Discussion', ratio: 0.31, duration: 38, badge: 'Major Scene', reason: 'Intense discussion / gameplay climax' },
+      { name: '🚀 High-Energy Escalation Drop', ratio: 0.39, duration: 42, badge: 'Energy Peak', reason: 'High-energy escalation and exciting play' },
+      { name: '⭐ Chat Superchat & Audience Peak', ratio: 0.47, duration: 34, badge: 'Chat Favorite', reason: 'Audience interaction and reaction highlight' },
+      { name: '💎 Unexpected Live Twist / Turn', ratio: 0.55, duration: 22, badge: 'Live Twist', reason: 'Unexpected turn of events during stream' },
+      { name: '⚡ Second Half Momentum Surge', ratio: 0.63, duration: 36, badge: 'Big Moment', reason: 'Major momentum shift and audience excitement' },
+      { name: '🔥 High-Stakes Exchange', ratio: 0.71, duration: 40, badge: 'Live Drama', reason: 'Dramatic climax and standout moment' },
+      { name: '🎬 Standout Stream Highlight', ratio: 0.79, duration: 28, badge: 'Top Play', reason: 'Creator standout performance & reaction' },
+      { name: '⚡ Escalation Before Current Moment', ratio: 0.86, duration: 35, badge: 'Recent Peak', reason: 'Escalating tension leading to recent stream action' },
+      { name: '💥 Hot Climax (Just Minutes Ago)', ratio: 0.92, duration: 30, badge: 'Hot Climax', reason: 'High-impact recent climax captured moments ago' },
+      { name: '🔴 Latest Stream Moment (Right Now!)', ratio: 0.97, duration: 20, badge: 'Latest Cut', reason: 'Fresh highlight moment right before link submission' }
+    ];
+
+    liveTemplates.forEach((tmpl, idx) => {
+      let start = Math.max(0, Math.round(totalDuration * tmpl.ratio));
+      let end = Math.min(totalDuration, start + tmpl.duration);
+      if (end - start < 12) {
+        start = Math.max(0, end - 15);
+      }
+
+      liveClips.push({
+        id: `live-clip-${idx + 1}`,
+        rank: idx + 1,
+        title: tmpl.name,
+        badge: tmpl.badge,
+        startTime: start,
+        endTime: end,
+        duration: end - start,
+        peakTime: start + Math.floor((end - start) / 2),
+        viralScore: Math.max(78, 99 - idx),
+        intensity: 0.96 - idx * 0.02,
+        reason: tmpl.reason,
+        isLive: true
+      });
+    });
+
+    return {
+      hasHeatmap: false,
+      dataPointsCount: 0,
+      heatmap: [],
+      clips: liveClips,
+      isLiveStream: true
+    };
+  }
+
+  // SCENARIO 3: Regular Video does NOT have heatmap yet (e.g. Samay Raina roast, fresh VOD)
   // Generate 8 to 10 rich highlight clips with NATURAL VARIABLE LENGTHS (15s, 22s, 31s, 38s, 42s, etc.)
   const totalDuration = duration > 0 ? duration : 600;
   const fallbackClips = [];

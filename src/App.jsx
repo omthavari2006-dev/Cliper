@@ -238,17 +238,23 @@ export default function App() {
                     {result.video.title}
                   </h3>
                   <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 mt-1">
+                    {result.video.isLive && (
+                      <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-red-950/80 border border-red-500/60 text-red-300 text-[11px] font-bold animate-pulse">
+                        <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                        LIVE STREAM
+                      </span>
+                    )}
                     <span className="font-semibold text-purple-300">{result.video.author}</span>
                     {result.video.duration > 0 && (
                       <span className="flex items-center gap-1">
                         <Clock className="w-3.5 h-3.5 text-slate-500" />
-                        Full Video: {formatDuration(result.video.duration)}
+                        {result.video.isLive ? 'Streamed Until Now' : 'Full Video'}: {formatDuration(result.video.duration)}
                       </span>
                     )}
                     {result.video.viewCount && (
                       <span className="flex items-center gap-1">
                         <Eye className="w-3.5 h-3.5 text-slate-500" />
-                        {result.video.viewCount} views
+                        {result.video.viewCount}
                       </span>
                     )}
                   </div>
@@ -259,7 +265,7 @@ export default function App() {
               <div className="flex items-center gap-2 shrink-0">
                 <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 text-xs font-semibold">
                   <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                  {result.analysis.clips.length} Standalone Highlight Clips Available
+                  {result.analysis.clips.length} {result.video.isLive ? 'Live Stream Clips (Queued One-by-One)' : 'Standalone Highlight Clips Available'}
                 </span>
               </div>
             </div>
@@ -281,11 +287,13 @@ export default function App() {
                 <div className="flex items-center gap-2">
                   <Film className="w-5 h-5 text-purple-400" />
                   <h3 className="font-extrabold text-slate-100 text-lg">
-                    Your Cut Video Clips ({result.analysis.clips.length})
+                    {result.video.isLive ? 'Your Cut Live Stream Clips' : 'Your Cut Video Clips'} ({result.analysis.clips.length})
                   </h3>
                 </div>
                 <span className="text-xs text-slate-400">
-                  Variable lengths (12s to 45s) • No YouTube embeds • Watch or download directly
+                  {result.video.isLive
+                    ? 'Captured from stream start up to current submission • Queued & ready one-by-one'
+                    : 'Variable lengths (12s to 45s) • No YouTube embeds • Watch or download directly'}
                 </span>
               </div>
 

@@ -29,6 +29,8 @@ export function isClipReady(clipId) {
   return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10000;
 }
 
+const pendingRenders = new Map();
+
 /**
  * Cuts a real, standalone MP4 clip from YouTube using yt-dlp + ffmpeg
  */
@@ -56,6 +58,12 @@ export async function renderClip({ videoId, startTime, endTime, title = 'clip' }
     };
   }
 
+  // Deduplicate in-flight render calls for the exact same clip
+  if (pendingRenders.has(clipId)) {
+    console.log(`[Cliper In-Flight] Joining ongoing render for: ${filename}`);
+    return pendingRenders.get(clipId);
+  }
+
   const startHms = formatHms(startSec);
   const endHms = formatHms(endSec);
   const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
@@ -63,7 +71,7 @@ export async function renderClip({ videoId, startTime, endTime, title = 'clip' }
   console.log(`[Cliper Render] Generating cut clip: ${startHms} to ${endHms} (${duration}s)`);
 
   const args = [
-    '--ffmpeg-location', BIN_DIR,
+    ...(fs.existsSync(BIN_DIR) ? ['--ffmpeg-location', BIN_DIR] : []),
     '--js-runtimes', 'node',
     // Maximum quality possible: 1080p/4K AVC1/H.264 + AAC audio or best available merged into MP4
     '-f', 'bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
@@ -75,7 +83,7 @@ export async function renderClip({ videoId, startTime, endTime, title = 'clip' }
     videoUrl
   ];
 
-  return new Promise((resolve, reject) => {
+  const renderPromise = new Promise((resolve, reject) => {
     const proc = spawn(YTDLP_PATH, args, {
       windowsHide: true
     });
@@ -115,6 +123,13 @@ export async function renderClip({ videoId, startTime, endTime, title = 'clip' }
       reject(err);
     });
   });
+
+  pendingRenders.set(clipId, renderPromise);
+  try {
+    return await renderPromise;
+  } finally {
+    pendingRenders.delete(clipId);
+  }
 }
 
 /**
