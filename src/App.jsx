@@ -16,6 +16,7 @@ import {
   RefreshCw,
   SlidersHorizontal,
   ChevronRight,
+  ArrowRight,
   Zap,
   Timer,
   Download,
@@ -34,12 +35,18 @@ export default function App() {
   const [samples, setSamples] = useState([]);
   const eventSourceRef = useRef(null);
 
-  // Dynamic filter and sorting states for handling 40-65+ clips seamlessly
+  // Hour-by-Hour Interactive Session States
+  const [activeSegmentIndex, setActiveSegmentIndex] = useState(0);
+  const [totalSegments, setTotalSegments] = useState(1);
+  const [isSessionComplete, setIsSessionComplete] = useState(false);
+  const [isLastSession, setIsLastSession] = useState(false);
+  const [completedSessions, setCompletedSessions] = useState(new Set());
+
+  // Dynamic filter and sorting states
   const [readyClipIds, setReadyClipIds] = useState(new Set());
   const [filterTab, setFilterTab] = useState('all'); // 'all' | 'ready' | 'queued'
   const [sortBy, setSortBy] = useState('viral'); // 'viral' | 'timeline'
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedHour, setSelectedHour] = useState('all');
 
   // Fetch samples on mount
   useEffect(() => {
@@ -57,7 +64,7 @@ export default function App() {
     };
   }, []);
 
-  const handleAnalyze = (targetUrl = null) => {
+  const startSession = (segIdx = 0, targetUrl = null) => {
     const inputUrl = targetUrl || url;
     if (!inputUrl.trim()) return;
 
@@ -68,17 +75,28 @@ export default function App() {
     }
 
     setLoading(true);
+    setIsSessionComplete(false);
     setError(null);
-    setStreamingStatus('Connecting to YouTube and reading stream timeline...');
-    setCurrentStage(null);
-    setResult(null);
+    setActiveSegmentIndex(segIdx);
     setReadyClipIds(new Set());
     setFilterTab('all');
-    setSelectedHour('all');
     setSearchQuery('');
+    setStreamingStatus(`Connecting & starting Session ${segIdx + 1} (Hour ${segIdx + 1})...`);
 
-    // Connect to progressive real-time SSE streaming endpoint
-    const eventSource = new EventSource(`/api/analyze/stream?url=${encodeURIComponent(inputUrl)}`);
+    // Clear previous hour's clips from view, as requested!
+    setResult(prev => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        analysis: {
+          ...prev.analysis,
+          clips: []
+        }
+      };
+    });
+
+    // Connect to progressive real-time SSE streaming endpoint for this specific session/hour
+    const eventSource = new EventSource(`/api/analyze/stream?url=${encodeURIComponent(inputUrl)}&segment=${segIdx}`);
     eventSourceRef.current = eventSource;
 
     eventSource.addEventListener('status', (e) => {
@@ -91,15 +109,16 @@ export default function App() {
     eventSource.addEventListener('video', (e) => {
       try {
         const video = JSON.parse(e.data);
-        setResult({
+        setTotalSegments(video.totalSegments || 1);
+        setResult(prev => ({
           video,
           analysis: {
             hasHeatmap: video.hasHeatmap,
             heatmap: [],
-            clips: [],
+            clips: prev?.video?.id === video.id ? (prev.analysis?.clips || []) : [],
             isLiveStream: video.isLive
           }
-        });
+        }));
       } catch {}
     });
 
@@ -137,17 +156,23 @@ export default function App() {
       } catch {}
     });
 
-    eventSource.addEventListener('segment_complete', (e) => {
+    eventSource.addEventListener('session_complete', (e) => {
       try {
         const data = JSON.parse(e.data);
-        if (data.message) setStreamingStatus(data.message);
+        setIsSessionComplete(true);
+        setIsLastSession(Boolean(data.isLastSession));
+        setCompletedSessions(prev => new Set([...prev, data.segmentIndex]));
+        setStreamingStatus(data.message || `Session ${data.hourNumber} Complete! Review & download clips below.`);
+        setLoading(false);
+        eventSource.close();
       } catch {}
     });
 
     eventSource.addEventListener('complete', (e) => {
       try {
         const data = JSON.parse(e.data);
-        setStreamingStatus(data.message || 'All timeline hours analyzed and clips ready!');
+        setIsSessionComplete(true);
+        setIsLastSession(Boolean(data.isLastSession));
         setLoading(false);
         eventSource.close();
       } catch {}
@@ -174,6 +199,17 @@ export default function App() {
     };
   };
 
+  const handleAnalyze = (targetUrl = null) => {
+    startSession(0, targetUrl);
+  };
+
+  const handleNextSession = () => {
+    const nextSeg = activeSegmentIndex + 1;
+    if (nextSeg < totalSegments) {
+      startSession(nextSeg);
+    }
+  };
+
   const handleStopStream = () => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -187,7 +223,8 @@ export default function App() {
       }).catch(() => {});
     }
     setLoading(false);
-    setStreamingStatus('Live pipeline stopped. All extracted clips are ready below.');
+    setIsSessionComplete(true);
+    setStreamingStatus(`Session ${activeSegmentIndex + 1} stopped. All extracted clips are ready below.`);
   };
 
   const handleClipReady = (clipId) => {
@@ -209,21 +246,12 @@ export default function App() {
   const readyCount = rawClips.filter(c => c.ready || readyClipIds.has(c.clipId)).length;
   const queuedCount = Math.max(0, rawClips.length - readyCount);
 
-  // Total hours in video (for hour tabs when video is multi-hour)
-  const totalHours = result?.video?.duration ? Math.ceil(result.video.duration / 3600) : 0;
-
   // Filter & sort clips
   const displayedClips = [...rawClips]
     .filter(c => {
       const isReady = c.ready || readyClipIds.has(c.clipId);
       if (filterTab === 'ready' && !isReady) return false;
       if (filterTab === 'queued' && isReady) return false;
-
-      if (selectedHour !== 'all') {
-        const hourNum = parseInt(selectedHour, 10);
-        const clipHour = Math.floor(c.startTime / 3600);
-        if (clipHour !== hourNum) return false;
-      }
 
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
@@ -313,12 +341,12 @@ export default function App() {
                 {loading ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Cutting Clips...</span>
+                    <span>Cutting Hour {activeSegmentIndex + 1}...</span>
                   </>
                 ) : (
                   <>
                     <Scissors className="w-4 h-4" />
-                    <span>Cut & Give Me All Clips</span>
+                    <span>Start Session 1 (Hour 1)</span>
                   </>
                 )}
               </button>
@@ -333,7 +361,7 @@ export default function App() {
                     key={idx}
                     onClick={() => {
                       setUrl(s.url);
-                      handleAnalyze(s.url);
+                      startSession(0, s.url);
                     }}
                     className="px-2.5 py-1 rounded-lg bg-slate-900/80 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-800 transition-colors flex items-center gap-1"
                   >
@@ -352,9 +380,9 @@ export default function App() {
               <Scissors className="w-6 h-6 text-purple-400" />
             </div>
             <div className="text-center">
-              <h3 className="font-bold text-slate-100 text-base">Connecting to YouTube & Initializing Pipeline...</h3>
+              <h3 className="font-bold text-slate-100 text-base">Connecting to YouTube & Initializing Session 1...</h3>
               <p className="text-xs text-purple-300 mt-1 font-medium">
-                {streamingStatus || 'Extracting timeline and preparing progressive live clip engine...'}
+                {streamingStatus || 'Extracting timeline and preparing hour-by-hour clip engine...'}
               </p>
             </div>
           </div>
@@ -374,8 +402,8 @@ export default function App() {
         {/* Results: Progressive Real-Time Cut Clips Gallery! */}
         {result && (
           <div className="flex flex-col gap-6 animate-fadeIn">
-            {/* Live Progressive Pipeline Banner */}
-            {loading ? (
+            {/* Live Pipeline Active Banner */}
+            {loading && (
               <div className="p-3.5 rounded-2xl bg-gradient-to-r from-purple-950/80 via-slate-900/90 to-indigo-950/80 border border-purple-500/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xl">
                 <div className="flex items-center gap-3">
                   <div className="w-9 h-9 rounded-xl bg-purple-600/30 border border-purple-500/40 flex items-center justify-center shrink-0">
@@ -385,10 +413,10 @@ export default function App() {
                     <div className="flex items-center gap-2">
                       <span className="flex items-center gap-1.5 text-[11px] font-extrabold text-cyan-300 uppercase tracking-wider bg-cyan-950/80 border border-cyan-500/40 px-2 py-0.5 rounded-md">
                         <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
-                        Live Pipeline Active
+                        Session {activeSegmentIndex + 1} of {totalSegments} Active
                       </span>
                       <span className="text-xs text-purple-300 font-bold">
-                        {currentStage ? `Hour ${currentStage.hourNumber} of ${currentStage.totalSegments}` : 'Progressive Stream'}
+                        Hour {activeSegmentIndex + 1}
                       </span>
                     </div>
                     <p className="text-xs text-slate-300 mt-1 font-medium">{streamingStatus}</p>
@@ -398,17 +426,50 @@ export default function App() {
                   onClick={handleStopStream}
                   className="px-3.5 py-1.5 rounded-xl bg-red-600/80 hover:bg-red-600 text-white text-xs font-bold shadow-md transition-all shrink-0 hover:scale-105"
                 >
-                  Stop Pipeline & Keep Clips ({rawClips.length})
+                  Stop Session & Keep Clips ({rawClips.length})
                 </button>
               </div>
-            ) : (
-              streamingStatus && (
-                <div className="p-3 rounded-xl bg-emerald-950/40 border border-emerald-500/30 flex items-center gap-2 text-xs text-emerald-300 shadow">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>{streamingStatus}</span>
-                </div>
-              )
             )}
+
+            {/* Session Complete: Review & Advance to Next Session Banner */}
+            {isSessionComplete && (
+              <div className="p-4 rounded-2xl bg-gradient-to-r from-emerald-950/90 via-slate-900 to-purple-950/90 border border-emerald-500/50 shadow-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 animate-fadeIn">
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-600/30 border border-emerald-500/40 flex items-center justify-center shrink-0 mt-0.5">
+                    <CheckCircle2 className="w-6 h-6 text-emerald-400" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded-md bg-emerald-950 border border-emerald-500/50 text-emerald-300 text-[11px] font-extrabold uppercase tracking-wide">
+                        Session {activeSegmentIndex + 1} (Hour {activeSegmentIndex + 1}) Ready for Review
+                      </span>
+                      <span className="text-xs text-slate-300 font-semibold">
+                        {rawClips.length} Shorts Clips Generated
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-300 mt-1">
+                      Review and download the clips you want below. When you're ready, click "Start Next Session" to remove these and cut Hour {activeSegmentIndex + 2}!
+                    </p>
+                  </div>
+                </div>
+
+                {!isLastSession ? (
+                  <button
+                    onClick={handleNextSession}
+                    className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-cyan-500 hover:from-purple-500 hover:to-cyan-400 text-white font-extrabold text-xs sm:text-sm shadow-xl shadow-purple-900/50 flex items-center justify-center gap-2 transition-all hover:scale-105 shrink-0"
+                  >
+                    <span>Start Next Session: Hour {activeSegmentIndex + 2} of {totalSegments}</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                ) : (
+                  <div className="px-4 py-2 rounded-xl bg-purple-950/80 border border-purple-500/50 text-purple-200 text-xs font-bold flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-amber-400" />
+                    <span>All {totalSegments} Timeline Hours Completed!</span>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Video Overview Bar */}
             <div className="glass-panel p-4 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border border-slate-800">
               <div className="flex items-center gap-4">
@@ -447,25 +508,64 @@ export default function App() {
 
               {/* Status Badge & Dynamic Live Counts */}
               <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 shrink-0">
+                <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-purple-950/60 border border-purple-500/40 text-purple-300 text-xs font-semibold">
+                  <Clock className="w-4 h-4 text-purple-400" />
+                  Session {activeSegmentIndex + 1} of {totalSegments} (Hour {activeSegmentIndex + 1})
+                </span>
                 <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 text-xs font-semibold">
                   <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                  {rawClips.length} Highlight Clips Across Full Duration
-                </span>
-                <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-cyan-950/60 border border-cyan-500/40 text-cyan-300 text-xs font-semibold">
-                  <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
-                  {readyCount} Ready Now • {queuedCount} Queued
+                  {readyCount} Clips Ready to Watch
                 </span>
               </div>
             </div>
 
-            {/* Interactive Heatmap Waveform (Visual Reference Only) */}
-            {result.analysis.heatmap && result.analysis.heatmap.length > 0 && (
-              <div className="glass-panel p-4 rounded-2xl border border-slate-800/90 shadow-xl">
-                <WaveformChart
-                  heatmap={result.analysis.heatmap}
-                  duration={result.video.duration}
-                  activeClip={result.analysis.clips[0]}
-                />
+            {/* Session Stepper / Timeline Bar */}
+            {totalSegments > 1 && (
+              <div className="glass-panel p-3 sm:p-4 rounded-2xl border border-slate-800 flex flex-col gap-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-purple-400" />
+                    <span className="text-xs font-bold text-slate-200">
+                      Session Timeline: <span className="text-purple-300 font-extrabold">Hour {activeSegmentIndex + 1} of {totalSegments}</span>
+                    </span>
+                  </div>
+                  <span className="text-[11px] text-slate-400 font-medium">
+                    {completedSessions.size} of {totalSegments} Hours Reviewed
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-thin">
+                  {Array.from({ length: totalSegments }, (_, i) => {
+                    const isCurrent = i === activeSegmentIndex;
+                    const isDone = completedSessions.has(i);
+                    return (
+                      <button
+                        key={i}
+                        onClick={() => !loading && startSession(i)}
+                        disabled={loading && isCurrent}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all border ${
+                          isCurrent
+                            ? 'bg-purple-600 border-purple-400 text-white shadow-lg shadow-purple-900/50 scale-105'
+                            : isDone
+                            ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300 hover:bg-emerald-900/60'
+                            : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                        }`}
+                      >
+                        {isCurrent && loading ? (
+                          <RefreshCw className="w-3 h-3 animate-spin text-cyan-300" />
+                        ) : isDone ? (
+                          <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                        ) : (
+                          <span className="w-2 h-2 rounded-full bg-slate-600"></span>
+                        )}
+                        <span>Hour {i + 1}</span>
+                        <span className="text-[10px] opacity-70">
+                          ({i.toString().padStart(2, '0')}:00)
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
 
@@ -475,17 +575,17 @@ export default function App() {
                 <div className="flex items-center gap-2">
                   <Film className="w-5 h-5 text-purple-400" />
                   <h3 className="font-extrabold text-slate-100 text-lg">
-                    {result.video.isLive ? 'All Live Stream Highlight Clips' : 'All Video Highlight Clips'} ({rawClips.length})
+                    Session {activeSegmentIndex + 1} Clips ({rawClips.length}) • Hour {activeSegmentIndex + 1} of {totalSegments}
                   </h3>
                 </div>
                 <span className="text-xs text-slate-400">
                   {result.video.isLive
-                    ? 'Full broadcast timeline scanned • Variable Shorts lengths (mostly 6s–15s, some big) • Queued & ready one-by-one'
-                    : 'Full video timeline scanned • Variable Shorts lengths (mostly 6s–15s, some big) • Watch or download directly'}
+                    ? `Hour ${activeSegmentIndex + 1} live stream timeline scanned • 13s–36s viral Shorts clips • Watch or download`
+                    : `Hour ${activeSegmentIndex + 1} video timeline scanned • 13s–36s viral Shorts clips • Watch or download`}
                 </span>
               </div>
 
-              {/* Comprehensive Filter & Navigation Bar */}
+              {/* Comprehensive Filter Bar */}
               <div className="glass-panel p-3 rounded-xl border border-slate-800 flex flex-col gap-3">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   {/* Status Filter Tabs */}
@@ -498,7 +598,7 @@ export default function App() {
                           : 'text-slate-400 hover:text-slate-200'
                       }`}
                     >
-                      All Clips ({rawClips.length})
+                      All Session Clips ({rawClips.length})
                     </button>
                     <button
                       onClick={() => setFilterTab('ready')}
@@ -548,54 +648,17 @@ export default function App() {
                         }`}
                       >
                         <Clock className="w-3 h-3 text-cyan-400" />
-                        Timeline Order (0:00 → End)
+                        Timeline Order
                       </button>
                     </div>
                   </div>
-                </div>
-
-                {/* Search & Timeline Hour Filter */}
-                <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800/60">
-                  {/* Jump to Hour selector for long videos */}
-                  {totalHours > 1 ? (
-                    <div className="flex flex-wrap items-center gap-1 text-xs">
-                      <span className="text-slate-400 font-medium mr-1">Timeline Hour:</span>
-                      <button
-                        onClick={() => setSelectedHour('all')}
-                        className={`px-2 py-1 rounded text-xs transition-colors ${
-                          selectedHour === 'all'
-                            ? 'bg-purple-600 text-white font-bold'
-                            : 'bg-slate-900 text-slate-400 hover:bg-slate-800 hover:text-white border border-slate-800'
-                        }`}
-                      >
-                        All Hours
-                      </button>
-                      {Array.from({ length: totalHours }, (_, i) => (
-                        <button
-                          key={i}
-                          onClick={() => setSelectedHour(String(i))}
-                          className={`px-2 py-1 rounded text-xs transition-colors ${
-                            selectedHour === String(i)
-                              ? 'bg-purple-600 text-white font-bold'
-                              : 'bg-slate-900 text-slate-400 hover:bg-slate-800 hover:text-white border border-slate-800'
-                          }`}
-                        >
-                          Hour {i + 1}
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-xs text-slate-400">
-                      Showing highlights detected across the full video duration
-                    </div>
-                  )}
 
                   {/* Search query box */}
                   <div className="relative flex items-center min-w-[200px]">
                     <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5" />
                     <input
                       type="text"
-                      placeholder="Filter clips by title, hour..."
+                      placeholder="Filter session clips..."
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       className="bg-slate-900/90 border border-slate-800 rounded-lg pl-8 pr-3 py-1 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-purple-500 w-full"
@@ -623,8 +686,25 @@ export default function App() {
               ) : (
                 <div className="glass-card p-8 rounded-2xl text-center text-slate-400 text-sm border border-slate-800 flex flex-col items-center gap-2">
                   <Scissors className="w-8 h-8 text-slate-600" />
-                  <p className="font-semibold text-slate-300">No clips match your current filter.</p>
-                  <p className="text-xs text-slate-500">Try selecting "All Clips" or clearing the search query.</p>
+                  <p className="font-semibold text-slate-300">
+                    {loading ? `Cutting clips for Session ${activeSegmentIndex + 1} (Hour ${activeSegmentIndex + 1})...` : 'No clips match your current filter.'}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    {loading ? 'Clips will appear here in real-time as they finish rendering.' : 'Try selecting "All Session Clips" or clearing the search query.'}
+                  </p>
+                </div>
+              )}
+
+              {/* Bottom Action CTA: Start Next Session */}
+              {isSessionComplete && !isLastSession && (
+                <div className="flex justify-center pt-6 pb-6">
+                  <button
+                    onClick={handleNextSession}
+                    className="px-8 py-3.5 rounded-2xl bg-gradient-to-r from-purple-600 via-indigo-600 to-cyan-500 hover:from-purple-500 hover:to-cyan-400 text-white font-extrabold text-sm sm:text-base shadow-2xl shadow-purple-900/60 flex items-center gap-3 transition-all hover:scale-105"
+                  >
+                    <span>Done Reviewing Hour {activeSegmentIndex + 1}? Start Next Session (Hour {activeSegmentIndex + 2} of {totalSegments})</span>
+                    <ArrowRight className="w-5 h-5" />
+                  </button>
                 </div>
               )}
             </div>
