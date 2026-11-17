@@ -44,9 +44,12 @@ app.get('/api/samples', (req, res) => {
   res.json({ samples: SAMPLES });
 });
 
+// In-memory active video streaming sessions
+const activeSessions = new Map();
+
 // Progressive Streaming Analysis & Cutting Endpoint
 // Streams video details immediately, then processes hour-by-hour (or segment-by-segment),
-// cutting and streaming clips one-by-one so the user gets clips in real-time as analysis continues!
+// cutting and streaming clips one-by-one across ALL timeline hours!
 app.get('/api/analyze/stream', async (req, res) => {
   const { url } = req.query;
   if (!url) {
@@ -65,135 +68,215 @@ app.get('/api/analyze/stream', async (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
 
-  let isClientConnected = true;
-  req.on('close', () => {
-    isClientConnected = false;
-    console.log(`[Cliper Stream] Client disconnected for video: ${videoId}`);
-  });
+  // Send SSE keep-alive ping every 3 seconds so proxies/browsers NEVER time out
+  const pingTimer = setInterval(() => {
+    try {
+      res.write(': ping\n\n');
+    } catch {}
+  }, 3000);
 
-  const sendEvent = (event, data) => {
-    if (!isClientConnected) return;
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  const sendEventToRes = (event, data) => {
+    try {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    } catch {}
   };
 
-  try {
-    sendEvent('status', { message: 'Connecting to YouTube and extracting stream timeline...' });
-    const videoData = await fetchYouTubeData(videoId);
+  // If session already exists for this video (e.g. client refreshed or reconnected):
+  let session = activeSessions.get(videoId);
 
-    sendEvent('video', {
-      id: videoData.videoId,
-      title: videoData.title,
-      author: videoData.author,
-      duration: videoData.duration,
-      viewCount: videoData.viewCount,
-      isLive: videoData.isLive,
-      startTimestamp: videoData.startTimestamp,
-      thumbnail: videoData.thumbnail,
-      maxResThumbnail: videoData.maxResThumbnail,
-      hasHeatmap: (videoData.rawMarkers || []).length > 5
-    });
+  if (session) {
+    console.log(`[Cliper Stream] Client joined active session for video: ${videoId}`);
+    session.subscribers.add(res);
 
-    const totalDuration = videoData.duration > 0 ? videoData.duration : 1800;
-
-    // Segment size: 1 hour (3600s), or ~20m chunks if video <= 1h
-    const chunkSize = totalDuration <= 1800 ? totalDuration : (totalDuration <= 5400 ? 1800 : 3600);
-    const totalSegments = Math.max(1, Math.ceil(totalDuration / chunkSize));
-
-    sendEvent('status', {
-      message: `Video is ${Math.round(totalDuration / 60)} minutes long (${totalSegments} timeline segment${totalSegments > 1 ? 's' : ''}). Starting progressive live clipping...`,
-      totalSegments
-    });
-
-    let overallRank = 1;
-
-    for (let segIdx = 0; segIdx < totalSegments; segIdx++) {
-      if (!isClientConnected) break;
-
-      const segStart = segIdx * chunkSize;
-      const segEnd = Math.min(totalDuration, (segIdx + 1) * chunkSize);
-      const segHourNum = segIdx + 1;
-
-      sendEvent('stage', {
-        segmentIndex: segIdx,
-        totalSegments,
-        hourNumber: segHourNum,
-        startTimeSec: segStart,
-        endTimeSec: segEnd,
-        message: `Analyzing Hour ${segHourNum} (${formatHms(segStart)} to ${formatHms(segEnd)})... Searching for top jokes, action, and reckless highlights`
-      });
-
-      // Analyze this specific hour/segment
-      const segMoments = analyzeSegment({
-        videoData,
-        segStart,
-        segEnd,
-        segIndex: segIdx,
-        totalSegments
-      });
-
-      sendEvent('status', {
-        message: `Hour ${segHourNum}: Found ${segMoments.length} highlight moments. Cutting 1080p clips now...`,
-        segmentIndex: segIdx,
-        hourNumber: segHourNum
-      });
-
-      // Cut clips one by one and stream each ready clip live as soon as it renders!
-      for (const moment of segMoments) {
-        if (!isClientConnected) break;
-
-        sendEvent('clipping_progress', {
-          title: moment.title,
-          duration: moment.duration,
-          startTime: moment.startTime,
-          endTime: moment.endTime,
-          rank: overallRank,
-          hourNumber: segHourNum,
-          message: `Cutting 1080p HD clip: ${moment.title} (${moment.duration}s)...`
-        });
-
-        try {
-          const rendered = await renderClip({
-            videoId,
-            startTime: moment.startTime,
-            endTime: moment.endTime,
-            title: moment.title
-          });
-
-          const readyClip = {
-            ...moment,
-            rank: overallRank++,
-            ready: true,
-            clipId: rendered.clipId,
-            streamUrl: rendered.streamUrl,
-            downloadUrl: rendered.downloadUrl,
-            hourNumber: segHourNum
-          };
-
-          // Push the ready clip immediately to the client!
-          sendEvent('clip_ready', readyClip);
-        } catch (cutErr) {
-          console.error(`[Streaming Cutter Error]`, cutErr.message);
-        }
-      }
-
-      sendEvent('segment_complete', {
-        segmentIndex: segIdx,
-        hourNumber: segHourNum,
-        message: `Completed Hour ${segHourNum}! Moving to Hour ${segHourNum + 1}...`
+    // Immediately replay video data and all already-completed clips!
+    if (session.videoData) {
+      sendEventToRes('video', session.videoData);
+    }
+    for (const clip of session.clips) {
+      sendEventToRes('clip_ready', clip);
+    }
+    if (session.currentStage) {
+      sendEventToRes('stage', session.currentStage);
+    }
+    if (session.lastProgress) {
+      sendEventToRes('clipping_progress', session.lastProgress);
+    }
+    if (session.isDone) {
+      sendEventToRes('complete', {
+        totalClips: session.clips.length,
+        message: 'All timeline hours analyzed and clips ready!'
       });
     }
+  } else {
+    console.log(`[Cliper Stream] Starting new streaming session for video: ${videoId}`);
+    session = {
+      videoId,
+      videoData: null,
+      clips: [],
+      totalSegments: 1,
+      currentStage: null,
+      lastProgress: null,
+      isDone: false,
+      isStopped: false,
+      subscribers: new Set([res]),
+      broadcast(event, data) {
+        for (const sub of this.subscribers) {
+          try {
+            sub.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+          } catch {}
+        }
+      }
+    };
+    activeSessions.set(videoId, session);
 
-    sendEvent('complete', {
-      totalClips: overallRank - 1,
-      message: 'All timeline hours analyzed and clips ready to watch/download!'
-    });
+    // Kick off the progressive multi-hour background pipeline
+    (async () => {
+      try {
+        session.broadcast('status', { message: 'Connecting to YouTube and extracting stream timeline...' });
+        const videoData = await fetchYouTubeData(videoId);
 
-    res.end();
-  } catch (err) {
-    console.error('[Analyze Stream Error]', err);
-    sendEvent('error', { message: err.message || 'Error streaming video analysis' });
-    res.end();
+        session.videoData = {
+          id: videoData.videoId,
+          title: videoData.title,
+          author: videoData.author,
+          duration: videoData.duration,
+          viewCount: videoData.viewCount,
+          isLive: videoData.isLive,
+          startTimestamp: videoData.startTimestamp,
+          thumbnail: videoData.thumbnail,
+          maxResThumbnail: videoData.maxResThumbnail,
+          hasHeatmap: (videoData.rawMarkers || []).length > 5
+        };
+
+        session.broadcast('video', session.videoData);
+
+        const totalDuration = videoData.duration > 0 ? videoData.duration : 1800;
+        const chunkSize = totalDuration <= 1800 ? totalDuration : (totalDuration <= 5400 ? 1800 : 3600);
+        const totalSegments = Math.max(1, Math.ceil(totalDuration / chunkSize));
+        session.totalSegments = totalSegments;
+
+        session.broadcast('status', {
+          message: `Video is ${Math.round(totalDuration / 60)} minutes long (${totalSegments} timeline hours/segments). Starting progressive live clipping...`,
+          totalSegments
+        });
+
+        let overallRank = 1;
+
+        // Loop through ALL segments (Hour 1, Hour 2, Hour 3 ... Hour N)
+        for (let segIdx = 0; segIdx < totalSegments; segIdx++) {
+          if (session.isStopped) {
+            console.log(`[Cliper Stream] Session for video ${videoId} stopped by user at Hour ${segIdx + 1}`);
+            break;
+          }
+
+          const segStart = segIdx * chunkSize;
+          const segEnd = Math.min(totalDuration, (segIdx + 1) * chunkSize);
+          const segHourNum = segIdx + 1;
+
+          session.currentStage = {
+            segmentIndex: segIdx,
+            totalSegments,
+            hourNumber: segHourNum,
+            startTimeSec: segStart,
+            endTimeSec: segEnd,
+            message: `Analyzing Hour ${segHourNum} (${formatHms(segStart)} to ${formatHms(segEnd)})... Searching for top jokes, action, and reckless highlights`
+          };
+
+          session.broadcast('stage', session.currentStage);
+
+          // Analyze this specific hour/segment
+          const segMoments = analyzeSegment({
+            videoData,
+            segStart,
+            segEnd,
+            segIndex: segIdx,
+            totalSegments
+          });
+
+          session.broadcast('status', {
+            message: `Hour ${segHourNum}: Found ${segMoments.length} highlight moments. Cutting 1080p clips now...`,
+            segmentIndex: segIdx,
+            hourNumber: segHourNum
+          });
+
+          // Cut each clip in this hour and stream immediately!
+          for (const moment of segMoments) {
+            if (session.isStopped) break;
+
+            session.lastProgress = {
+              title: moment.title,
+              duration: moment.duration,
+              startTime: moment.startTime,
+              endTime: moment.endTime,
+              rank: overallRank,
+              hourNumber: segHourNum,
+              message: `Cutting 1080p HD clip: ${moment.title} (${moment.duration}s)...`
+            };
+
+            session.broadcast('clipping_progress', session.lastProgress);
+
+            try {
+              const rendered = await renderClip({
+                videoId,
+                startTime: moment.startTime,
+                endTime: moment.endTime,
+                title: moment.title
+              });
+
+              const readyClip = {
+                ...moment,
+                rank: overallRank++,
+                ready: true,
+                clipId: rendered.clipId,
+                streamUrl: rendered.streamUrl,
+                downloadUrl: rendered.downloadUrl,
+                hourNumber: segHourNum
+              };
+
+              session.clips.push(readyClip);
+              session.broadcast('clip_ready', readyClip);
+            } catch (cutErr) {
+              console.error(`[Streaming Cutter Error]`, cutErr.message);
+            }
+          }
+
+          session.broadcast('segment_complete', {
+            segmentIndex: segIdx,
+            hourNumber: segHourNum,
+            message: `Completed Hour ${segHourNum}! Moving to Hour ${segHourNum + 1}...`
+          });
+        }
+
+        session.isDone = true;
+        session.broadcast('complete', {
+          totalClips: session.clips.length,
+          message: 'All timeline hours analyzed and clips ready to watch/download!'
+        });
+      } catch (err) {
+        console.error('[Analyze Stream Pipeline Error]', err);
+        session.broadcast('error', { message: err.message || 'Error streaming video analysis' });
+      }
+    })();
   }
+
+  req.on('close', () => {
+    clearInterval(pingTimer);
+    if (session) {
+      session.subscribers.delete(res);
+      console.log(`[Cliper Stream] Subscriber detached for video: ${videoId}. Remaining subscribers: ${session.subscribers.size}`);
+    }
+  });
+});
+
+// Explicitly stop a streaming pipeline session
+app.post('/api/analyze/stop', (req, res) => {
+  const { videoId } = req.body;
+  if (videoId && activeSessions.has(videoId)) {
+    const session = activeSessions.get(videoId);
+    session.isStopped = true;
+    console.log(`[Cliper Stream] Session explicitly stopped by client for video: ${videoId}`);
+  }
+  res.json({ success: true, message: 'Pipeline session stopped' });
 });
 
 // Analyze YouTube video and auto-cut ALL variable-length highlight clips

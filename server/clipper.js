@@ -131,6 +131,16 @@ export async function renderClip({ videoId, startTime, endTime, title = 'clip' }
 
     let stdoutData = '';
     let stderrData = '';
+    let isDone = false;
+
+    // 90-second safety watchdog prevents hanging processes from blocking the pipeline
+    const timeout = setTimeout(() => {
+      if (!isDone) {
+        isDone = true;
+        try { proc.kill('SIGKILL'); } catch {}
+        reject(new Error(`Clip render timed out after 90 seconds (${filename})`));
+      }
+    }, 90000);
 
     proc.stdout.on('data', (d) => {
       stdoutData += d.toString();
@@ -141,6 +151,10 @@ export async function renderClip({ videoId, startTime, endTime, title = 'clip' }
     });
 
     proc.on('close', async (code) => {
+      if (isDone) return;
+      isDone = true;
+      clearTimeout(timeout);
+
       if (code === 0 && fs.existsSync(outputPath)) {
         // Fast direct bitstream copy into ISOBMFF MP4 with moov atom at beginning
         await ensureBrowserFaststartMp4(outputPath);
@@ -162,6 +176,9 @@ export async function renderClip({ videoId, startTime, endTime, title = 'clip' }
     });
 
     proc.on('error', (err) => {
+      if (isDone) return;
+      isDone = true;
+      clearTimeout(timeout);
       console.error('[Cliper Spawn Error]:', err);
       reject(err);
     });

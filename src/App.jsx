@@ -153,25 +153,38 @@ export default function App() {
       } catch {}
     });
 
+    // Server-sent fatal error event with JSON payload
     eventSource.addEventListener('error', (e) => {
       try {
         if (e.data) {
           const errData = JSON.parse(e.data);
           setError(errData.message || 'Error occurred while streaming clips');
-        } else {
           setLoading(false);
+          eventSource.close();
         }
-      } catch {
+      } catch {}
+    });
+
+    // Network-level error handler: allows automatic browser reconnection
+    eventSource.onerror = () => {
+      // readyState: 0 = CONNECTING (reconnecting), 1 = OPEN, 2 = CLOSED
+      if (eventSource.readyState === 2) {
         setLoading(false);
       }
-      eventSource.close();
-    });
+    };
   };
 
   const handleStopStream = () => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
       eventSourceRef.current = null;
+    }
+    if (result?.video?.id) {
+      fetch('/api/analyze/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ videoId: result.video.id })
+      }).catch(() => {});
     }
     setLoading(false);
     setStreamingStatus('Live pipeline stopped. All extracted clips are ready below.');
