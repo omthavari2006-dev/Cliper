@@ -148,13 +148,15 @@ export default function DirectClipCard({ clip, rank, videoId }) {
             <div className="relative w-full aspect-[9/14] sm:aspect-[9/16] max-h-[380px] overflow-hidden flex items-center justify-center bg-black">
               {/* Blurred background video */}
               <video
-                src={clip.streamUrl}
                 autoPlay
                 loop
                 muted
                 playsInline
+                preload="metadata"
                 className="absolute inset-0 w-full h-full object-cover blur-xl opacity-40 pointer-events-none scale-125"
-              />
+              >
+                <source src={clip.streamUrl} type="video/mp4" />
+              </video>
               {/* Phone notch badge */}
               <div className="absolute top-2 z-20 px-2.5 py-0.5 rounded-full bg-black/70 backdrop-blur-md border border-white/10 text-[10px] text-purple-300 font-mono flex items-center gap-1.5">
                 <span className="text-cyan-400 font-bold">1080p HD</span>
@@ -165,12 +167,14 @@ export default function DirectClipCard({ clip, rank, videoId }) {
               <div className="relative z-10 w-full aspect-video">
                 <video
                   ref={videoRef}
-                  src={clip.streamUrl}
                   controls
                   loop
                   playsInline
+                  preload="metadata"
                   className="w-full h-full object-contain"
-                />
+                >
+                  <source src={clip.streamUrl} type="video/mp4" />
+                </video>
               </div>
             </div>
           ) : (
@@ -178,12 +182,14 @@ export default function DirectClipCard({ clip, rank, videoId }) {
             <div className="w-full aspect-video rounded-xl overflow-hidden bg-black flex items-center justify-center">
               <video
                 ref={videoRef}
-                src={clip.streamUrl}
                 controls
                 loop
                 playsInline
+                preload="metadata"
                 className="w-full h-full object-contain"
-              />
+              >
+                <source src={clip.streamUrl} type="video/mp4" />
+              </video>
             </div>
           )
         ) : (

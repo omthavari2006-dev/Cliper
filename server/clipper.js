@@ -26,7 +26,48 @@ export function formatHms(secs) {
 export function isClipReady(clipId) {
   const filename = `${clipId}.mp4`;
   const outputPath = path.join(CLIPS_DIR, filename);
-  return fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10000;
+  const isWriting = fs.existsSync(`${outputPath}.part`) || fs.existsSync(`${outputPath}.faststart.mp4`);
+  return !isWriting && fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10000;
+}
+
+/**
+ * Fast direct-stream remux to guarantee 100% browser-compatible MP4 container with faststart moov atom
+ */
+export async function ensureBrowserFaststartMp4(filePath) {
+  const FFMPEG_PATH = fs.existsSync(path.join(BIN_DIR, 'ffmpeg.exe'))
+    ? path.join(BIN_DIR, 'ffmpeg.exe')
+    : 'ffmpeg';
+
+  const tempPath = filePath + '.faststart.mp4';
+  return new Promise((resolve) => {
+    const args = [
+      '-y',
+      '-i', filePath,
+      '-c', 'copy',
+      '-avoid_negative_ts', 'make_zero',
+      '-movflags', '+faststart',
+      tempPath
+    ];
+
+    const proc = spawn(FFMPEG_PATH, args, { windowsHide: true });
+    proc.on('close', (code) => {
+      if (code === 0 && fs.existsSync(tempPath) && fs.statSync(tempPath).size > 1000) {
+        try {
+          fs.unlinkSync(filePath);
+          fs.renameSync(tempPath, filePath);
+          resolve(true);
+        } catch {
+          resolve(false);
+        }
+      } else {
+        if (fs.existsSync(tempPath)) {
+          try { fs.unlinkSync(tempPath); } catch {}
+        }
+        resolve(false);
+      }
+    });
+    proc.on('error', () => resolve(false));
+  });
 }
 
 const pendingRenders = new Map();
@@ -99,9 +140,11 @@ export async function renderClip({ videoId, startTime, endTime, title = 'clip' }
       stderrData += d.toString();
     });
 
-    proc.on('close', (code) => {
+    proc.on('close', async (code) => {
       if (code === 0 && fs.existsSync(outputPath)) {
-        console.log(`[Cliper Render Success] Created: ${filename}`);
+        // Fast direct bitstream copy into ISOBMFF MP4 with moov atom at beginning
+        await ensureBrowserFaststartMp4(outputPath);
+        console.log(`[Cliper Render Success] Created browser-ready MP4: ${filename}`);
         resolve({
           success: true,
           clipId,
