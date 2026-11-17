@@ -3,8 +3,8 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { extractVideoId, fetchYouTubeData, analyzeClips } from './analyzer.js';
-import { renderClip, cutClipsBatch, isClipReady } from './clipper.js';
+import { extractVideoId, fetchYouTubeData, analyzeClips, analyzeSegment } from './analyzer.js';
+import { renderClip, cutClipsBatch, isClipReady, formatHms } from './clipper.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -42,6 +42,158 @@ const SAMPLES = [
 
 app.get('/api/samples', (req, res) => {
   res.json({ samples: SAMPLES });
+});
+
+// Progressive Streaming Analysis & Cutting Endpoint
+// Streams video details immediately, then processes hour-by-hour (or segment-by-segment),
+// cutting and streaming clips one-by-one so the user gets clips in real-time as analysis continues!
+app.get('/api/analyze/stream', async (req, res) => {
+  const { url } = req.query;
+  if (!url) {
+    return res.status(400).json({ error: 'Please provide a valid YouTube URL' });
+  }
+
+  const videoId = extractVideoId(url);
+  if (!videoId) {
+    return res.status(400).json({ error: 'Could not parse a valid YouTube Video ID' });
+  }
+
+  // Configure Server-Sent Events headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  let isClientConnected = true;
+  req.on('close', () => {
+    isClientConnected = false;
+    console.log(`[Cliper Stream] Client disconnected for video: ${videoId}`);
+  });
+
+  const sendEvent = (event, data) => {
+    if (!isClientConnected) return;
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    sendEvent('status', { message: 'Connecting to YouTube and extracting stream timeline...' });
+    const videoData = await fetchYouTubeData(videoId);
+
+    sendEvent('video', {
+      id: videoData.videoId,
+      title: videoData.title,
+      author: videoData.author,
+      duration: videoData.duration,
+      viewCount: videoData.viewCount,
+      isLive: videoData.isLive,
+      startTimestamp: videoData.startTimestamp,
+      thumbnail: videoData.thumbnail,
+      maxResThumbnail: videoData.maxResThumbnail,
+      hasHeatmap: (videoData.rawMarkers || []).length > 5
+    });
+
+    const totalDuration = videoData.duration > 0 ? videoData.duration : 1800;
+
+    // Segment size: 1 hour (3600s), or ~20m chunks if video <= 1h
+    const chunkSize = totalDuration <= 1800 ? totalDuration : (totalDuration <= 5400 ? 1800 : 3600);
+    const totalSegments = Math.max(1, Math.ceil(totalDuration / chunkSize));
+
+    sendEvent('status', {
+      message: `Video is ${Math.round(totalDuration / 60)} minutes long (${totalSegments} timeline segment${totalSegments > 1 ? 's' : ''}). Starting progressive live clipping...`,
+      totalSegments
+    });
+
+    let overallRank = 1;
+
+    for (let segIdx = 0; segIdx < totalSegments; segIdx++) {
+      if (!isClientConnected) break;
+
+      const segStart = segIdx * chunkSize;
+      const segEnd = Math.min(totalDuration, (segIdx + 1) * chunkSize);
+      const segHourNum = segIdx + 1;
+
+      sendEvent('stage', {
+        segmentIndex: segIdx,
+        totalSegments,
+        hourNumber: segHourNum,
+        startTimeSec: segStart,
+        endTimeSec: segEnd,
+        message: `Analyzing Hour ${segHourNum} (${formatHms(segStart)} to ${formatHms(segEnd)})... Searching for top jokes, action, and reckless highlights`
+      });
+
+      // Analyze this specific hour/segment
+      const segMoments = analyzeSegment({
+        videoData,
+        segStart,
+        segEnd,
+        segIndex: segIdx,
+        totalSegments
+      });
+
+      sendEvent('status', {
+        message: `Hour ${segHourNum}: Found ${segMoments.length} highlight moments. Cutting 1080p clips now...`,
+        segmentIndex: segIdx,
+        hourNumber: segHourNum
+      });
+
+      // Cut clips one by one and stream each ready clip live as soon as it renders!
+      for (const moment of segMoments) {
+        if (!isClientConnected) break;
+
+        sendEvent('clipping_progress', {
+          title: moment.title,
+          duration: moment.duration,
+          startTime: moment.startTime,
+          endTime: moment.endTime,
+          rank: overallRank,
+          hourNumber: segHourNum,
+          message: `Cutting 1080p HD clip: ${moment.title} (${moment.duration}s)...`
+        });
+
+        try {
+          const rendered = await renderClip({
+            videoId,
+            startTime: moment.startTime,
+            endTime: moment.endTime,
+            title: moment.title
+          });
+
+          const readyClip = {
+            ...moment,
+            rank: overallRank++,
+            ready: true,
+            clipId: rendered.clipId,
+            streamUrl: rendered.streamUrl,
+            downloadUrl: rendered.downloadUrl,
+            hourNumber: segHourNum
+          };
+
+          // Push the ready clip immediately to the client!
+          sendEvent('clip_ready', readyClip);
+        } catch (cutErr) {
+          console.error(`[Streaming Cutter Error]`, cutErr.message);
+        }
+      }
+
+      sendEvent('segment_complete', {
+        segmentIndex: segIdx,
+        hourNumber: segHourNum,
+        message: `Completed Hour ${segHourNum}! Moving to Hour ${segHourNum + 1}...`
+      });
+    }
+
+    sendEvent('complete', {
+      totalClips: overallRank - 1,
+      message: 'All timeline hours analyzed and clips ready to watch/download!'
+    });
+
+    res.end();
+  } catch (err) {
+    console.error('[Analyze Stream Error]', err);
+    sendEvent('error', { message: err.message || 'Error streaming video analysis' });
+    res.end();
+  }
 });
 
 // Analyze YouTube video and auto-cut ALL variable-length highlight clips

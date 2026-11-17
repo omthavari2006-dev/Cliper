@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Scissors,
   Sparkles,
@@ -27,10 +27,12 @@ import DirectClipCard from './components/DirectClipCard.jsx';
 export default function App() {
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
-  const [loadingStep, setLoadingStep] = useState(0);
+  const [streamingStatus, setStreamingStatus] = useState('');
+  const [currentStage, setCurrentStage] = useState(null);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
   const [samples, setSamples] = useState([]);
+  const eventSourceRef = useRef(null);
 
   // Dynamic filter and sorting states for handling 40-65+ clips seamlessly
   const [readyClipIds, setReadyClipIds] = useState(new Set());
@@ -47,47 +49,132 @@ export default function App() {
         if (data.samples) setSamples(data.samples);
       })
       .catch(() => {});
+
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+    };
   }, []);
 
-  const handleAnalyze = async (targetUrl = null) => {
+  const handleAnalyze = (targetUrl = null) => {
     const inputUrl = targetUrl || url;
     if (!inputUrl.trim()) return;
 
+    // Close any previous event source connection
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+
     setLoading(true);
     setError(null);
-    setLoadingStep(1);
+    setStreamingStatus('Connecting to YouTube and reading stream timeline...');
+    setCurrentStage(null);
+    setResult(null);
+    setReadyClipIds(new Set());
+    setFilterTab('all');
+    setSelectedHour('all');
+    setSearchQuery('');
 
-    // Step animation for smooth progress feedback
-    const t1 = setTimeout(() => setLoadingStep(2), 600);
-    const t2 = setTimeout(() => setLoadingStep(3), 1400);
+    // Connect to progressive real-time SSE streaming endpoint
+    const eventSource = new EventSource(`/api/analyze/stream?url=${encodeURIComponent(inputUrl)}`);
+    eventSourceRef.current = eventSource;
 
-    try {
-      const res = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: inputUrl })
-      });
+    eventSource.addEventListener('status', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.message) setStreamingStatus(data.message);
+      } catch {}
+    });
 
-      clearTimeout(t1);
-      clearTimeout(t2);
+    eventSource.addEventListener('video', (e) => {
+      try {
+        const video = JSON.parse(e.data);
+        setResult({
+          video,
+          analysis: {
+            hasHeatmap: video.hasHeatmap,
+            heatmap: [],
+            clips: [],
+            isLiveStream: video.isLive
+          }
+        });
+      } catch {}
+    });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to analyze and cut video clips');
+    eventSource.addEventListener('stage', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setCurrentStage(data);
+        if (data.message) setStreamingStatus(data.message);
+      } catch {}
+    });
+
+    eventSource.addEventListener('clipping_progress', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.message) setStreamingStatus(data.message);
+      } catch {}
+    });
+
+    eventSource.addEventListener('clip_ready', (e) => {
+      try {
+        const clip = JSON.parse(e.data);
+        setReadyClipIds(prev => new Set([...prev, clip.clipId]));
+        setResult(prev => {
+          if (!prev) return prev;
+          const existing = prev.analysis.clips || [];
+          if (existing.some(c => c.clipId === clip.clipId)) return prev;
+          return {
+            ...prev,
+            analysis: {
+              ...prev.analysis,
+              clips: [...existing, clip]
+            }
+          };
+        });
+      } catch {}
+    });
+
+    eventSource.addEventListener('segment_complete', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.message) setStreamingStatus(data.message);
+      } catch {}
+    });
+
+    eventSource.addEventListener('complete', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setStreamingStatus(data.message || 'All timeline hours analyzed and clips ready!');
+        setLoading(false);
+        eventSource.close();
+      } catch {}
+    });
+
+    eventSource.addEventListener('error', (e) => {
+      try {
+        if (e.data) {
+          const errData = JSON.parse(e.data);
+          setError(errData.message || 'Error occurred while streaming clips');
+        } else {
+          setLoading(false);
+        }
+      } catch {
+        setLoading(false);
       }
+      eventSource.close();
+    });
+  };
 
-      setResult(data);
-      const initialReady = new Set((data.analysis.clips || []).filter(c => c.ready).map(c => c.clipId));
-      setReadyClipIds(initialReady);
-      setFilterTab('all');
-      setSelectedHour('all');
-      setSearchQuery('');
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-      setLoadingStep(0);
+  const handleStopStream = () => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
     }
+    setLoading(false);
+    setStreamingStatus('Live pipeline stopped. All extracted clips are ready below.');
   };
 
   const handleClipReady = (clipId) => {
@@ -245,26 +332,17 @@ export default function App() {
           </div>
         </section>
 
-        {/* Loading Progress State */}
-        {loading && (
+        {/* Initial Connecting State (shown only before video metadata arrives) */}
+        {loading && !result && (
           <div className="w-full max-w-xl mx-auto glass-panel p-6 rounded-2xl border border-purple-500/40 shadow-2xl flex flex-col items-center gap-4 animate-fadeIn">
             <div className="w-14 h-14 rounded-full border-4 border-purple-500/20 border-t-purple-500 animate-spin flex items-center justify-center">
               <Scissors className="w-6 h-6 text-purple-400" />
             </div>
             <div className="text-center">
-              <h3 className="font-bold text-slate-100 text-base">Detecting & Slicing All Highlight Clips...</h3>
-              <p className="text-xs text-slate-400 mt-1">
-                {loadingStep === 1 && 'Scanning timeline for all peak replay & high-energy moments...'}
-                {loadingStep === 2 && 'Calculating natural variable durations (12s to 45s) for each moment...'}
-                {loadingStep === 3 && 'Slicing video files into standalone MP4s ready to download...'}
+              <h3 className="font-bold text-slate-100 text-base">Connecting to YouTube & Initializing Pipeline...</h3>
+              <p className="text-xs text-purple-300 mt-1 font-medium">
+                {streamingStatus || 'Extracting timeline and preparing progressive live clip engine...'}
               </p>
-            </div>
-
-            <div className="w-full bg-slate-800/80 rounded-full h-1.5 overflow-hidden mt-1">
-              <div
-                className="bg-gradient-to-r from-purple-500 to-cyan-400 h-full transition-all duration-500"
-                style={{ width: `${loadingStep * 33}%` }}
-              ></div>
             </div>
           </div>
         )}
@@ -280,9 +358,44 @@ export default function App() {
           </div>
         )}
 
-        {/* Results: Direct Cut Clips Gallery! */}
-        {result && !loading && (
+        {/* Results: Progressive Real-Time Cut Clips Gallery! */}
+        {result && (
           <div className="flex flex-col gap-6 animate-fadeIn">
+            {/* Live Progressive Pipeline Banner */}
+            {loading ? (
+              <div className="p-3.5 rounded-2xl bg-gradient-to-r from-purple-950/80 via-slate-900/90 to-indigo-950/80 border border-purple-500/50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xl">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-purple-600/30 border border-purple-500/40 flex items-center justify-center shrink-0">
+                    <RefreshCw className="w-5 h-5 text-cyan-400 animate-spin" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="flex items-center gap-1.5 text-[11px] font-extrabold text-cyan-300 uppercase tracking-wider bg-cyan-950/80 border border-cyan-500/40 px-2 py-0.5 rounded-md">
+                        <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
+                        Live Pipeline Active
+                      </span>
+                      <span className="text-xs text-purple-300 font-bold">
+                        {currentStage ? `Hour ${currentStage.hourNumber} of ${currentStage.totalSegments}` : 'Progressive Stream'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-300 mt-1 font-medium">{streamingStatus}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={handleStopStream}
+                  className="px-3.5 py-1.5 rounded-xl bg-red-600/80 hover:bg-red-600 text-white text-xs font-bold shadow-md transition-all shrink-0 hover:scale-105"
+                >
+                  Stop Pipeline & Keep Clips ({rawClips.length})
+                </button>
+              </div>
+            ) : (
+              streamingStatus && (
+                <div className="p-3 rounded-xl bg-emerald-950/40 border border-emerald-500/30 flex items-center gap-2 text-xs text-emerald-300 shadow">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>{streamingStatus}</span>
+                </div>
+              )
+            )}
             {/* Video Overview Bar */}
             <div className="glass-panel p-4 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border border-slate-800">
               <div className="flex items-center gap-4">
