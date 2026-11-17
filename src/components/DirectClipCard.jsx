@@ -14,7 +14,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 
-export default function DirectClipCard({ clip, rank, videoId }) {
+export default function DirectClipCard({ clip, rank, videoId, onReady }) {
   const [aspectRatio, setAspectRatio] = useState('9-16'); // default to 9:16 vertical for Shorts/TikTok!
   const [copied, setCopied] = useState(false);
   const [isReady, setIsReady] = useState(Boolean(clip.ready));
@@ -25,6 +25,9 @@ export default function DirectClipCard({ clip, rank, videoId }) {
   useEffect(() => {
     if (isReady || !clip.clipId) return;
 
+    // Scale polling frequency based on queue priority
+    const pollInterval = rank <= 6 ? 2000 : rank <= 16 ? 3500 : 5000;
+
     const interval = setInterval(async () => {
       try {
         const res = await fetch(`/api/clip/check/${clip.clipId}`);
@@ -32,13 +35,14 @@ export default function DirectClipCard({ clip, rank, videoId }) {
         if (data.ready) {
           setIsReady(true);
           setCutting(false);
+          if (onReady) onReady(clip.clipId);
           clearInterval(interval);
         }
       } catch {}
-    }, 2000);
+    }, pollInterval);
 
     return () => clearInterval(interval);
-  }, [clip.clipId, isReady]);
+  }, [clip.clipId, isReady, rank, onReady]);
 
   const handleManualCut = async () => {
     setCutting(true);
@@ -56,6 +60,7 @@ export default function DirectClipCard({ clip, rank, videoId }) {
       const data = await res.json();
       if (data.success) {
         setIsReady(true);
+        if (onReady) onReady(clip.clipId);
       }
     } catch (e) {
       console.error(e);
@@ -65,8 +70,13 @@ export default function DirectClipCard({ clip, rank, videoId }) {
   };
 
   const formatTime = (secs) => {
-    const m = Math.floor(secs / 60);
+    if (!secs || secs <= 0) return '0:00';
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
     const s = Math.floor(secs % 60);
+    if (h > 0) {
+      return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    }
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 

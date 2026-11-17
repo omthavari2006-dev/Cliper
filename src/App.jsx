@@ -32,6 +32,13 @@ export default function App() {
   const [result, setResult] = useState(null);
   const [samples, setSamples] = useState([]);
 
+  // Dynamic filter and sorting states for handling 40-65+ clips seamlessly
+  const [readyClipIds, setReadyClipIds] = useState(new Set());
+  const [filterTab, setFilterTab] = useState('all'); // 'all' | 'ready' | 'queued'
+  const [sortBy, setSortBy] = useState('viral'); // 'viral' | 'timeline'
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedHour, setSelectedHour] = useState('all');
+
   // Fetch samples on mount
   useEffect(() => {
     fetch('/api/samples')
@@ -70,6 +77,11 @@ export default function App() {
       }
 
       setResult(data);
+      const initialReady = new Set((data.analysis.clips || []).filter(c => c.ready).map(c => c.clipId));
+      setReadyClipIds(initialReady);
+      setFilterTab('all');
+      setSelectedHour('all');
+      setSearchQuery('');
     } catch (err) {
       setError(err.message);
     } finally {
@@ -78,11 +90,57 @@ export default function App() {
     }
   };
 
+  const handleClipReady = (clipId) => {
+    setReadyClipIds(prev => new Set([...prev, clipId]));
+  };
+
   const formatDuration = (secs) => {
-    const m = Math.floor(secs / 60);
+    if (!secs || secs <= 0) return '0:00';
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
     const s = Math.floor(secs % 60);
+    if (h > 0) {
+      return `${h}h ${m}m ${s.toString().padStart(2, '0')}s`;
+    }
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
+
+  const rawClips = result?.analysis?.clips || [];
+  const readyCount = rawClips.filter(c => c.ready || readyClipIds.has(c.clipId)).length;
+  const queuedCount = Math.max(0, rawClips.length - readyCount);
+
+  // Total hours in video (for hour tabs when video is multi-hour)
+  const totalHours = result?.video?.duration ? Math.ceil(result.video.duration / 3600) : 0;
+
+  // Filter & sort clips
+  const displayedClips = [...rawClips]
+    .filter(c => {
+      const isReady = c.ready || readyClipIds.has(c.clipId);
+      if (filterTab === 'ready' && !isReady) return false;
+      if (filterTab === 'queued' && isReady) return false;
+
+      if (selectedHour !== 'all') {
+        const hourNum = parseInt(selectedHour, 10);
+        const clipHour = Math.floor(c.startTime / 3600);
+        if (clipHour !== hourNum) return false;
+      }
+
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const matchesTitle = c.title.toLowerCase().includes(q);
+        const matchesBadge = c.badge?.toLowerCase().includes(q);
+        const matchesRank = String(c.rank).includes(q);
+        if (!matchesTitle && !matchesBadge && !matchesRank) return false;
+      }
+
+      return true;
+    })
+    .sort((a, b) => {
+      if (sortBy === 'timeline') {
+        return a.startTime - b.startTime;
+      }
+      return (b.viralScore || 0) - (a.viralScore || 0);
+    });
 
   return (
     <div className="min-h-screen flex flex-col bg-[#07090e] text-slate-100 selection:bg-purple-600/40">
@@ -248,7 +306,7 @@ export default function App() {
                     {result.video.duration > 0 && (
                       <span className="flex items-center gap-1">
                         <Clock className="w-3.5 h-3.5 text-slate-500" />
-                        {result.video.isLive ? 'Streamed Until Now' : 'Full Video'}: {formatDuration(result.video.duration)}
+                        {result.video.isLive ? 'Streamed Duration' : 'Full Duration'}: <strong className="text-purple-300 font-mono">{formatDuration(result.video.duration)}</strong>
                       </span>
                     )}
                     {result.video.viewCount && (
@@ -261,11 +319,15 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Status Badge */}
-              <div className="flex items-center gap-2 shrink-0">
+              {/* Status Badge & Dynamic Live Counts */}
+              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 shrink-0">
                 <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 text-xs font-semibold">
                   <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                  {result.analysis.clips.length} {result.video.isLive ? 'Live Stream Clips (Queued One-by-One)' : 'Standalone Highlight Clips Available'}
+                  {rawClips.length} Highlight Clips Across Full Duration
+                </span>
+                <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-cyan-950/60 border border-cyan-500/40 text-cyan-300 text-xs font-semibold">
+                  <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
+                  {readyCount} Ready Now • {queuedCount} Queued
                 </span>
               </div>
             </div>
@@ -283,31 +345,162 @@ export default function App() {
 
             {/* DIRECT EDITED CLIPS GALLERY */}
             <div className="flex flex-col gap-4">
-              <div className="flex items-center justify-between pb-1">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-1">
                 <div className="flex items-center gap-2">
                   <Film className="w-5 h-5 text-purple-400" />
                   <h3 className="font-extrabold text-slate-100 text-lg">
-                    {result.video.isLive ? 'Your Cut Live Stream Clips' : 'Your Cut Video Clips'} ({result.analysis.clips.length})
+                    {result.video.isLive ? 'All Live Stream Highlight Clips' : 'All Video Highlight Clips'} ({rawClips.length})
                   </h3>
                 </div>
                 <span className="text-xs text-slate-400">
                   {result.video.isLive
-                    ? 'Captured from stream start up to current submission • Queued & ready one-by-one'
-                    : 'Variable lengths (12s to 45s) • No YouTube embeds • Watch or download directly'}
+                    ? 'Full broadcast timeline scanned • Variable lengths (15s–44s) • Queued & ready one-by-one'
+                    : 'Full video timeline scanned • Variable lengths (15s–44s) • Watch or download directly'}
                 </span>
               </div>
 
-              {/* Grid of Cut Clips */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {result.analysis.clips.map((clip, index) => (
-                  <DirectClipCard
-                    key={clip.id || index}
-                    clip={clip}
-                    rank={index + 1}
-                    videoId={result.video.id}
-                  />
-                ))}
+              {/* Comprehensive Filter & Navigation Bar */}
+              <div className="glass-panel p-3 rounded-xl border border-slate-800 flex flex-col gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  {/* Status Filter Tabs */}
+                  <div className="flex items-center bg-slate-900/90 p-1 rounded-lg border border-slate-800 text-xs">
+                    <button
+                      onClick={() => setFilterTab('all')}
+                      className={`px-3 py-1.5 rounded-md font-medium transition-all ${
+                        filterTab === 'all'
+                          ? 'bg-purple-600 text-white shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      All Clips ({rawClips.length})
+                    </button>
+                    <button
+                      onClick={() => setFilterTab('ready')}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium transition-all ${
+                        filterTab === 'ready'
+                          ? 'bg-emerald-600 text-white shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      Ready to Watch ({readyCount})
+                    </button>
+                    <button
+                      onClick={() => setFilterTab('queued')}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium transition-all ${
+                        filterTab === 'queued'
+                          ? 'bg-cyan-600 text-white shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      In Queue ({queuedCount})
+                    </button>
+                  </div>
+
+                  {/* Sort Order Switcher */}
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="text-slate-400 font-medium">Sort By:</span>
+                    <div className="flex items-center bg-slate-900/90 p-1 rounded-lg border border-slate-800">
+                      <button
+                        onClick={() => setSortBy('viral')}
+                        className={`flex items-center gap-1 px-3 py-1 rounded-md transition-all ${
+                          sortBy === 'viral'
+                            ? 'bg-purple-600 text-white font-bold'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        <Flame className="w-3 h-3 text-amber-400" />
+                        Top Viral Score
+                      </button>
+                      <button
+                        onClick={() => setSortBy('timeline')}
+                        className={`flex items-center gap-1 px-3 py-1 rounded-md transition-all ${
+                          sortBy === 'timeline'
+                            ? 'bg-purple-600 text-white font-bold'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        <Clock className="w-3 h-3 text-cyan-400" />
+                        Timeline Order (0:00 → End)
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Search & Timeline Hour Filter */}
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800/60">
+                  {/* Jump to Hour selector for long videos */}
+                  {totalHours > 1 ? (
+                    <div className="flex flex-wrap items-center gap-1 text-xs">
+                      <span className="text-slate-400 font-medium mr-1">Timeline Hour:</span>
+                      <button
+                        onClick={() => setSelectedHour('all')}
+                        className={`px-2 py-1 rounded text-xs transition-colors ${
+                          selectedHour === 'all'
+                            ? 'bg-purple-600 text-white font-bold'
+                            : 'bg-slate-900 text-slate-400 hover:bg-slate-800 hover:text-white border border-slate-800'
+                        }`}
+                      >
+                        All Hours
+                      </button>
+                      {Array.from({ length: totalHours }, (_, i) => (
+                        <button
+                          key={i}
+                          onClick={() => setSelectedHour(String(i))}
+                          className={`px-2 py-1 rounded text-xs transition-colors ${
+                            selectedHour === String(i)
+                              ? 'bg-purple-600 text-white font-bold'
+                              : 'bg-slate-900 text-slate-400 hover:bg-slate-800 hover:text-white border border-slate-800'
+                          }`}
+                        >
+                          Hour {i + 1}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-slate-400">
+                      Showing highlights detected across the full video duration
+                    </div>
+                  )}
+
+                  {/* Search query box */}
+                  <div className="relative flex items-center min-w-[200px]">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5" />
+                    <input
+                      type="text"
+                      placeholder="Filter clips by title, hour..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="bg-slate-900/90 border border-slate-800 rounded-lg pl-8 pr-3 py-1 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-purple-500 w-full"
+                    />
+                  </div>
+                </div>
               </div>
+
+              {/* Grid of Cut Clips */}
+              {displayedClips.length > 0 ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {displayedClips.map((clip, index) => (
+                    <DirectClipCard
+                      key={clip.clipId || clip.id || index}
+                      clip={{
+                        ...clip,
+                        ready: Boolean(clip.ready || readyClipIds.has(clip.clipId))
+                      }}
+                      rank={clip.rank || index + 1}
+                      videoId={result.video.id}
+                      onReady={handleClipReady}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="glass-card p-8 rounded-2xl text-center text-slate-400 text-sm border border-slate-800 flex flex-col items-center gap-2">
+                  <Scissors className="w-8 h-8 text-slate-600" />
+                  <p className="font-semibold text-slate-300">No clips match your current filter.</p>
+                  <p className="text-xs text-slate-500">Try selecting "All Clips" or clearing the search query.</p>
+                </div>
+              )}
             </div>
           </div>
         )}

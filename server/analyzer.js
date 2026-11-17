@@ -149,14 +149,12 @@ export async function fetchYouTubeData(videoId) {
     }
 
     if (elapsedSec > 0) {
-      // If stream has been running for days (e.g. > 2 hours), cap to active DVR buffer (3600-7200s)
-      if (elapsedSec > 7200) {
-        lengthSeconds = 7200; // 2 hours of active rewindable DVR
-      } else {
-        lengthSeconds = elapsedSec;
-      }
+      // YouTube live DVR rewind buffer supports up to 12-14 hours (43200s - 50400s)
+      lengthSeconds = Math.min(elapsedSec, 43200);
+    } else if (lengthSeconds > 0) {
+      lengthSeconds = Math.min(lengthSeconds, 43200);
     } else {
-      lengthSeconds = 1800; // default 30 mins window
+      lengthSeconds = 3600; // default 1 hour window if startTimestamp unknown
     }
 
     // Viewers for live stream
@@ -254,8 +252,34 @@ export async function fetchYouTubeData(videoId) {
 }
 
 /**
+ * Computes dynamic target clip count scaling with video/stream length
+ * 10h+ video gets ~65 highlight clips spanning the entire duration
+ */
+export function getDynamicTargetClipCount(durationSec) {
+  if (!durationSec || durationSec <= 180) return 6; // <= 3 mins
+  if (durationSec <= 600) return 10; // 3 - 10 mins
+  if (durationSec <= 1200) return 16; // 10 - 20 mins
+  if (durationSec <= 2400) return 22; // 20 - 40 mins
+  if (durationSec <= 3600) return 28; // 40 - 60 mins
+  if (durationSec <= 7200) return 36; // 1 - 2 hours
+  if (durationSec <= 14400) return 46; // 2 - 4 hours
+  if (durationSec <= 28800) return 56; // 4 - 8 hours
+  return 65; // 8 - 12+ hours (e.g. 10+ hour video gets 65 highlight clips!)
+}
+
+function formatTimeAnchor(secs) {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  if (h > 0) {
+    return `[${h}h ${m}m]`;
+  }
+  return `[${m}m]`;
+}
+
+/**
  * Peak Detection & Natural Variable Length Windowing Algorithm
- * Yields clips of variable durations (e.g. 14s, 22s, 31s, 42s - strictly capped under 45-50s)
+ * Yields clips of variable durations (15s to 44s - strictly capped under 45-50s)
+ * Scales dynamically across the ENTIRE duration of long videos and live streams (up to 10+ hours).
  */
 export function analyzeClips(videoData, options = {}) {
   const { rawMarkers, duration, chapters, title, isLive } = videoData;
@@ -278,7 +302,11 @@ export function analyzeClips(videoData, options = {}) {
     '🔥 Intense Exchange',
     '🎬 Must-Watch Moment',
     '⚡ Unexpected Twist',
-    '🌟 Finale Highlight'
+    '🌟 High-Impact Climax',
+    '🔥 Crazy Dialogue Peak',
+    '⚡ Escalation Surge',
+    '🎯 Masterclass Play',
+    '🚀 Crowd Hype Wave'
   ];
 
   const badgesList = [
@@ -291,14 +319,19 @@ export function analyzeClips(videoData, options = {}) {
     'Epic Highlight',
     'Key Scene',
     'Trending Cut',
-    'Top Pick'
+    'Top Pick',
+    'Hype Drop',
+    'Hot Action'
   ];
+
+  const varDurations = [18, 26, 34, 22, 42, 29, 36, 20, 44, 25, 38, 31, 23, 40, 27, 35, 19, 43, 30, 24];
 
   // SCENARIO 1: Video has YouTube Heatseeker / Heatmap data
   if (points.length >= 5) {
     const peaks = [];
     const n = points.length;
     const avgIntensity = points.reduce((sum, p) => sum + p.intensity, 0) / n;
+    const targetCount = getDynamicTargetClipCount(duration);
 
     for (let i = 0; i < n; i++) {
       const cur = points[i];
@@ -317,7 +350,7 @@ export function analyzeClips(videoData, options = {}) {
         (cur.intensity > prev && cur.intensity >= next);
 
       // Must be above baseline threshold
-      const isSignificant = cur.intensity >= 0.10 && cur.intensity >= avgIntensity * 0.8;
+      const isSignificant = cur.intensity >= 0.08 && cur.intensity >= avgIntensity * 0.7;
 
       if (isLocalMax && isSignificant) {
         // Dynamic variable window: follow the natural slope of the peak
@@ -340,17 +373,17 @@ export function analyzeClips(videoData, options = {}) {
 
         let clipLength = endTime - startTime;
 
-        // Ensure variable length bounds: minimum 12s, maximum 45s (never over 45-50s)
-        if (clipLength < 12) {
-          const pad = 12 - clipLength;
+        // Ensure variable length bounds: minimum 14s, maximum 44s (never over 45-50s)
+        if (clipLength < 14) {
+          const pad = 14 - clipLength;
           startTime = Math.max(0, startTime - Math.floor(pad / 2));
-          endTime = startTime + 12;
+          endTime = startTime + 14;
           if (duration > 0 && endTime > duration) {
             endTime = duration;
-            startTime = Math.max(0, endTime - 12);
+            startTime = Math.max(0, endTime - 14);
           }
-        } else if (clipLength > 45) {
-          // Center around the peak and cap at 42-45s
+        } else if (clipLength > 44) {
+          // Center around the peak and cap at 42-44s
           const peakSec = cur.startSec;
           startTime = Math.max(0, peakSec - 18);
           endTime = startTime + 42;
@@ -373,7 +406,7 @@ export function analyzeClips(videoData, options = {}) {
     // Sort by intensity descending
     peaks.sort((a, b) => b.intensity - a.intensity);
 
-    // Deduplicate overlapping clips (allow up to 25% overlap maximum)
+    // Deduplicate overlapping clips (allow up to 35% overlap maximum)
     const nonOverlapping = [];
     for (const p of peaks) {
       const overlaps = nonOverlapping.some(existing => {
@@ -389,18 +422,66 @@ export function analyzeClips(videoData, options = {}) {
       }
     }
 
-    const maxDetectedIntensity = Math.max(...peaks.map(p => p.intensity), 0.01);
+    // If long video has more target clips than raw heatmap peaks, distribute additional moments
+    // across the entire duration timeline so the whole video has highlight coverage
+    if (nonOverlapping.length < targetCount && duration > 60) {
+      const intervalSec = duration / targetCount;
+      for (let k = 0; k < targetCount && nonOverlapping.length < targetCount; k++) {
+        const segStart = Math.round(k * intervalSec);
+        const segEnd = Math.round((k + 1) * intervalSec);
 
-    // Provide up to 10 clips of variable length!
-    const clips = nonOverlapping.slice(0, 10).map((peak, idx) => {
+        // Check if this segment is already represented
+        const hasRep = nonOverlapping.some(
+          p => p.startTimeSec >= segStart - 30 && p.startTimeSec <= segEnd + 30
+        );
+
+        if (!hasRep) {
+          // Find highest heatmap point in this segment
+          const segPoints = points.filter(p => p.startSec >= segStart && p.startSec <= segEnd);
+          let peakPoint = segPoints.length > 0
+            ? segPoints.reduce((max, p) => (p.intensity > max.intensity ? p : max), segPoints[0])
+            : null;
+
+          const centerSec = peakPoint ? peakPoint.startSec : Math.round(segStart + intervalSec * 0.5);
+          const dur = varDurations[(k + nonOverlapping.length) % varDurations.length];
+          const start = Math.max(0, Math.min(duration - dur, centerSec - Math.floor(dur / 2)));
+          const end = Math.min(duration, start + dur);
+
+          nonOverlapping.push({
+            peakTimeSec: centerSec,
+            intensity: peakPoint ? peakPoint.intensity : avgIntensity * 0.75,
+            startTimeSec: start,
+            endTimeSec: end,
+            durationSec: end - start
+          });
+        }
+      }
+      nonOverlapping.sort((a, b) => b.intensity - a.intensity);
+    }
+
+    const selectedPeaks = nonOverlapping.slice(0, targetCount);
+    const maxDetectedIntensity = Math.max(...selectedPeaks.map(p => p.intensity), 0.01);
+
+    const clips = selectedPeaks.map((peak, idx) => {
       const relScore = peak.intensity / maxDetectedIntensity;
       const viralScore = Math.min(99, Math.max(70, Math.round(70 + relScore * 29)));
+      const timeAnchor = formatTimeAnchor(peak.startTimeSec);
+
+      let titleText;
+      if (idx === 0) {
+        titleText = `${timeAnchor} 🔥 #1 Viral Climax (Peak Replay)`;
+      } else if (idx === 1) {
+        titleText = `${timeAnchor} ⚡ Top Crowd Favorite Highlight`;
+      } else {
+        const baseTitle = titlesList[idx % titlesList.length];
+        titleText = `${timeAnchor} ${baseTitle}`;
+      }
 
       return {
         id: `clip-${idx + 1}`,
         rank: idx + 1,
-        title: titlesList[idx] || `Highlight #${idx + 1}`,
-        badge: badgesList[idx] || 'Highlight',
+        title: titleText,
+        badge: badgesList[idx % badgesList.length] || 'Highlight',
         startTime: peak.startTimeSec,
         endTime: peak.endTimeSec,
         duration: peak.durationSec, // Natural variable length!
@@ -423,49 +504,111 @@ export function analyzeClips(videoData, options = {}) {
   }
 
   // SCENARIO 2: LIVE STREAM (Ongoing or Active Broadcast)
-  // Generates 14 variable-length highlight moments distributed from stream start up to the current submission moment
+  // Generates dynamically scaled highlight moments distributed across the ENTIRE stream timeline
+  // from stream start up to the current moment (up to 65 clips for 10h+ stream)
   if (isLive) {
-    const totalDuration = duration > 0 ? duration : 1800;
+    const totalDuration = duration > 0 ? duration : 3600;
+    const targetCount = getDynamicTargetClipCount(totalDuration);
     const liveClips = [];
 
-    const liveTemplates = [
-      { name: '🔴 Live Stream Start & Opening Hook', ratio: 0.02, duration: 18, badge: 'Live Intro', reason: 'Opening broadcast hook & stream setup' },
-      { name: '⚡ Early Hype & Audience Greeting', ratio: 0.08, duration: 24, badge: 'Early Surge', reason: 'Warm-up chatter and first live energy wave' },
-      { name: '🎯 First Big Topic / Match Action', ratio: 0.15, duration: 32, badge: 'High Action', reason: 'First major segment milestone and reaction' },
-      { name: '🔥 Hilarious Stream Banter', ratio: 0.23, duration: 26, badge: 'Stream Banter', reason: 'High-velocity banter and live chat laughter' },
-      { name: '💥 Intense Mid-Stream Discussion', ratio: 0.31, duration: 38, badge: 'Major Scene', reason: 'Intense discussion / gameplay climax' },
-      { name: '🚀 High-Energy Escalation Drop', ratio: 0.39, duration: 42, badge: 'Energy Peak', reason: 'High-energy escalation and exciting play' },
-      { name: '⭐ Chat Superchat & Audience Peak', ratio: 0.47, duration: 34, badge: 'Chat Favorite', reason: 'Audience interaction and reaction highlight' },
-      { name: '💎 Unexpected Live Twist / Turn', ratio: 0.55, duration: 22, badge: 'Live Twist', reason: 'Unexpected turn of events during stream' },
-      { name: '⚡ Second Half Momentum Surge', ratio: 0.63, duration: 36, badge: 'Big Moment', reason: 'Major momentum shift and audience excitement' },
-      { name: '🔥 High-Stakes Exchange', ratio: 0.71, duration: 40, badge: 'Live Drama', reason: 'Dramatic climax and standout moment' },
-      { name: '🎬 Standout Stream Highlight', ratio: 0.79, duration: 28, badge: 'Top Play', reason: 'Creator standout performance & reaction' },
-      { name: '⚡ Escalation Before Current Moment', ratio: 0.86, duration: 35, badge: 'Recent Peak', reason: 'Escalating tension leading to recent stream action' },
-      { name: '💥 Hot Climax (Just Minutes Ago)', ratio: 0.92, duration: 30, badge: 'Hot Climax', reason: 'High-impact recent climax captured moments ago' },
-      { name: '🔴 Latest Stream Moment (Right Now!)', ratio: 0.97, duration: 20, badge: 'Latest Cut', reason: 'Fresh highlight moment right before link submission' }
+    const streamMomentThemes = [
+      '🔥 High-Energy Action Surge',
+      '⚡ Big Turning Point / Match Play',
+      '🎯 Key Discussion & Debate',
+      '🚀 Crowd Hype & Chat Reaction',
+      '💥 Intense Dialogue / Battle Climax',
+      '⭐ Hilarious Banter & Laughs',
+      '💎 Unexpected Stream Twist',
+      '🎬 Creator Standout Performance',
+      '⚡ Second Wave Momentum Shift',
+      '🔥 High-Stakes Confrontation',
+      '🌟 Audience Interaction Peak',
+      '🏆 Epic Segment Milestone'
     ];
 
-    liveTemplates.forEach((tmpl, idx) => {
-      let start = Math.max(0, Math.round(totalDuration * tmpl.ratio));
-      let end = Math.min(totalDuration, start + tmpl.duration);
-      if (end - start < 12) {
-        start = Math.max(0, end - 15);
+    const badges = [
+      'Viral Play',
+      'Crowd Surge',
+      'Key Turning Point',
+      'Top Banter',
+      'High Stakes',
+      'Hot Moment',
+      'Audience Peak',
+      'Major Action',
+      'Fan Favorite',
+      'Live Drama'
+    ];
+
+    for (let i = 0; i < targetCount; i++) {
+      const dur = varDurations[i % varDurations.length];
+      const progress = i / targetCount;
+
+      // Natural spread across timeline with slight human variance
+      let start = Math.round(progress * totalDuration + (i % 2 === 0 ? 8 : -8));
+      start = Math.max(0, Math.min(totalDuration - dur - 4, start));
+      let end = Math.min(totalDuration, start + dur);
+      if (end - start < 14) {
+        start = Math.max(0, end - 18);
+      }
+
+      const clipDuration = end - start;
+      const timeAnchor = formatTimeAnchor(start);
+
+      let titleText;
+      let badge;
+      let reason;
+      let viralScore;
+
+      if (i === 0) {
+        titleText = `${timeAnchor} 🔴 Stream Kickoff & Opening Hook`;
+        badge = 'Live Intro';
+        reason = 'Opening broadcast hook & stream setup';
+        viralScore = 98;
+      } else if (i === targetCount - 1) {
+        titleText = `${timeAnchor} 🔴 Fresh Live Moment (Right Now!)`;
+        badge = 'Live Edge';
+        reason = 'Fresh highlight moment right before link submission';
+        viralScore = 99;
+      } else if (i === targetCount - 2) {
+        titleText = `${timeAnchor} 💥 Hot Climax (Just Minutes Ago)`;
+        badge = 'Hot Climax';
+        reason = 'High-impact recent climax captured moments ago';
+        viralScore = 97;
+      } else if (Math.abs(progress - 0.5) < 0.05) {
+        titleText = `${timeAnchor} 💥 Mid-Stream Climax & Big Shift`;
+        badge = 'Major Scene';
+        reason = 'Peak mid-stream climax and major turning point';
+        viralScore = 96;
+      } else {
+        const theme = streamMomentThemes[i % streamMomentThemes.length];
+        titleText = `${timeAnchor} ${theme}`;
+        badge = badges[i % badges.length];
+        reason = `High-engagement highlight beat captured at ${timeAnchor} during live broadcast`;
+        viralScore = Math.max(76, 95 - ((i % 8) * 2));
       }
 
       liveClips.push({
-        id: `live-clip-${idx + 1}`,
-        rank: idx + 1,
-        title: tmpl.name,
-        badge: tmpl.badge,
+        id: `live-clip-${i + 1}`,
+        rank: i + 1,
+        title: titleText,
+        badge,
         startTime: start,
         endTime: end,
-        duration: end - start,
-        peakTime: start + Math.floor((end - start) / 2),
-        viralScore: Math.max(78, 99 - idx),
-        intensity: 0.96 - idx * 0.02,
-        reason: tmpl.reason,
+        duration: clipDuration,
+        peakTime: start + Math.floor(clipDuration / 2),
+        viralScore,
+        intensity: (viralScore / 100),
+        reason,
         isLive: true
       });
+    }
+
+    // Sort liveClips so the most viral moments are top-ranked (#1 Hot Climax, #2 Live Edge, #3 Kickoff...)
+    // This ensures Priority Batch cuts the most exciting clips immediately in ~4s
+    liveClips.sort((a, b) => b.viralScore - a.viralScore);
+    liveClips.forEach((c, idx) => {
+      c.rank = idx + 1;
+      c.id = `live-clip-${idx + 1}`;
     });
 
     return {
@@ -477,81 +620,118 @@ export function analyzeClips(videoData, options = {}) {
     };
   }
 
-  // SCENARIO 3: Regular Video does NOT have heatmap yet (e.g. Samay Raina roast, fresh VOD)
-  // Generate 8 to 10 rich highlight clips with NATURAL VARIABLE LENGTHS (15s, 22s, 31s, 38s, 42s, etc.)
+  // SCENARIO 3: Regular Video does NOT have heatmap yet (e.g. fresh VOD, podcast, roast)
+  // Dynamically generates targetCount highlight clips with NATURAL VARIABLE LENGTHS (15s to 44s)
+  // spanning the ENTIRE duration of the video
   const totalDuration = duration > 0 ? duration : 600;
+  const targetCount = getDynamicTargetClipCount(totalDuration);
   const fallbackClips = [];
 
+  const videoMomentThemes = [
+    '🔥 High-Hook Video Intro',
+    '⚡ Early Escalation & Banter',
+    '🎯 Key Narrative Milestone',
+    '🚀 Intense Exchange Peak',
+    '💥 Midpoint Climax Drop',
+    '⭐ Hilarious Turning Point',
+    '💎 Unexpected Reaction Twist',
+    '🎬 Second Half Momentum Shift',
+    '🔥 High-Stakes Confrontation',
+    '⚡ Grand Climax Punchline',
+    '🌟 Standout Creator Highlight',
+    '🏆 Video Finale Climax'
+  ];
+
   if (chapters && chapters.length > 0) {
-    chapters.slice(0, 10).forEach((ch, idx) => {
-      // Variable durations based on chapter index (e.g. 18s, 28s, 35s, 22s, 42s)
-      const varDurations = [18, 26, 34, 22, 40, 19, 32, 27, 42, 24];
+    // Collect all chapters and pad with intermediate highlights if chapters < targetCount
+    const chapterPoints = chapters.map((ch, idx) => ({
+      timeSec: ch.timeSec,
+      title: ch.title
+    }));
+
+    for (let idx = 0; idx < targetCount; idx++) {
       const dur = varDurations[idx % varDurations.length];
-      const start = ch.timeSec;
+      let start;
+      let chapterTitle = null;
+
+      if (idx < chapterPoints.length) {
+        start = chapterPoints[idx].timeSec;
+        chapterTitle = chapterPoints[idx].title;
+      } else {
+        // Distribute remaining clips across timeline
+        const progress = idx / targetCount;
+        start = Math.round(progress * totalDuration);
+      }
+
+      start = Math.max(0, Math.min(totalDuration - dur - 2, start));
       const end = Math.min(totalDuration, start + dur);
+      const clipDuration = end - start;
+      const timeAnchor = formatTimeAnchor(start);
+
+      const titleText = chapterTitle
+        ? `${timeAnchor} 📖 ${chapterTitle}`
+        : `${timeAnchor} ${videoMomentThemes[idx % videoMomentThemes.length]}`;
+
+      const viralScore = Math.max(72, 98 - ((idx % 10) * 2));
 
       fallbackClips.push({
-        id: `chapter-clip-${idx + 1}`,
+        id: `clip-${idx + 1}`,
         rank: idx + 1,
-        title: ch.title || titlesList[idx] || `Chapter Highlight #${idx + 1}`,
-        badge: badgesList[idx] || 'Key Scene',
+        title: titleText,
+        badge: badgesList[idx % badgesList.length] || 'Key Scene',
         startTime: start,
         endTime: end,
-        duration: end - start,
-        peakTime: start + Math.floor(dur / 2),
-        viralScore: Math.max(72, 95 - idx * 2),
-        intensity: 0.9 - idx * 0.04,
-        reason: 'Identified creator chapter milestone and highlight beat'
-      });
-    });
-  } else {
-    // Generate 8 diverse, variable-length highlight moments across the video timeline
-    const highlightTemplates = [
-      { name: '🔥 High-Hook Intro', ratio: 0.04, duration: 18, reason: 'High-energy video opening hook' },
-      { name: '⚡ First Big Roast / Joke', ratio: 0.16, duration: 26, reason: 'Early escalation & crowd reaction' },
-      { name: '🎯 Build-Up & Setup', ratio: 0.28, duration: 32, reason: 'Story build-up leading into major punchline' },
-      { name: '🚀 Intense Exchange Peak', ratio: 0.42, duration: 38, reason: 'High-velocity banter and confrontation' },
-      { name: '💥 Midpoint Climax Drop', ratio: 0.54, duration: 42, reason: 'Peak mid-video highlight moment' },
-      { name: '⭐ Fan-Favorite Scene', ratio: 0.68, duration: 24, reason: 'Hilarious turning point and comeback' },
-      { name: '💎 Unexpected Reaction Twist', ratio: 0.80, duration: 19, reason: 'Unexpected reaction & high-impact exchange' },
-      { name: '🏆 Grand Finale Climax', ratio: 0.92, duration: 34, reason: 'Ending punchline and closing reaction' }
-    ];
-
-    // If video is longer than 15 minutes, add 2 additional intermediate moments
-    if (totalDuration > 900) {
-      highlightTemplates.splice(4, 0, {
-        name: '🔥 Crazy Dialogue Moment',
-        ratio: 0.48,
-        duration: 28,
-        reason: 'Rapid back-and-forth dialogue peak'
-      });
-      highlightTemplates.splice(7, 0, {
-        name: '⚡ Second Half Climax',
-        ratio: 0.74,
-        duration: 36,
-        reason: 'Second half high-energy turning point'
+        duration: clipDuration,
+        peakTime: start + Math.floor(clipDuration / 2),
+        viralScore,
+        intensity: (viralScore / 100),
+        reason: chapterTitle
+          ? `Creator chapter milestone: "${chapterTitle}"`
+          : `High-engagement highlight beat captured at ${timeAnchor}`
       });
     }
+  } else {
+    // Generate targetCount diverse, variable-length highlight moments across the full timeline
+    for (let idx = 0; idx < targetCount; idx++) {
+      const dur = varDurations[idx % varDurations.length];
+      const progress = idx / targetCount;
+      let start = Math.round(progress * totalDuration + (idx % 2 === 0 ? 5 : -5));
+      start = Math.max(0, Math.min(totalDuration - dur - 2, start));
+      const end = Math.min(totalDuration, start + dur);
+      const clipDuration = end - start;
+      const timeAnchor = formatTimeAnchor(start);
 
-    highlightTemplates.forEach((tmpl, idx) => {
-      const start = Math.max(0, Math.round(totalDuration * tmpl.ratio));
-      const end = Math.min(totalDuration, start + tmpl.duration);
+      const theme = videoMomentThemes[idx % videoMomentThemes.length];
+      const titleText = idx === 0
+        ? `${timeAnchor} 🔥 Opening Hook & Video Setup`
+        : idx === targetCount - 1
+        ? `${timeAnchor} 🏆 Video Finale & Closing Climax`
+        : `${timeAnchor} ${theme}`;
+
+      const viralScore = Math.max(72, 98 - ((idx % 10) * 2));
 
       fallbackClips.push({
         id: `moment-clip-${idx + 1}`,
         rank: idx + 1,
-        title: tmpl.name,
-        badge: badgesList[idx] || 'Top Moment',
+        title: titleText,
+        badge: badgesList[idx % badgesList.length] || 'Top Moment',
         startTime: start,
         endTime: end,
-        duration: end - start, // Natural variable length!
-        peakTime: start + Math.floor(tmpl.duration / 2),
-        viralScore: Math.max(72, 96 - idx * 2),
-        intensity: 0.92 - idx * 0.04,
-        reason: tmpl.reason
+        duration: clipDuration,
+        peakTime: start + Math.floor(clipDuration / 2),
+        viralScore,
+        intensity: (viralScore / 100),
+        reason: `Pivotal highlight beat captured at ${timeAnchor} across the full video timeline`
       });
-    });
+    }
   }
+
+  // Sort by viralScore so top priority moments render first
+  fallbackClips.sort((a, b) => b.viralScore - a.viralScore);
+  fallbackClips.forEach((c, idx) => {
+    c.rank = idx + 1;
+    c.id = `clip-${idx + 1}`;
+  });
 
   return {
     hasHeatmap: false,
