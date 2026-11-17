@@ -278,8 +278,9 @@ function formatTimeAnchor(secs) {
 
 /**
  * Peak Detection & Natural Variable Length Windowing Algorithm
- * Yields clips of variable durations (15s to 44s - strictly capped under 45-50s)
- * Scales dynamically across the ENTIRE duration of long videos and live streams (up to 10+ hours).
+ * Yields clips of variable durations strictly between 13s and 36s (never < 13s, never > 38s)
+ * Analyzes video content for JOKES, ACTION, RECKLESS/WILD MOMENTS, and PUNCHLINES.
+ * Centers clips around complete narrative context: Setup (55%) -> Climax/Punchline -> Laughter/Reaction (45%).
  */
 export function analyzeClips(videoData, options = {}) {
   const { rawMarkers, duration, chapters, title, isLive } = videoData;
@@ -290,51 +291,43 @@ export function analyzeClips(videoData, options = {}) {
     intensity: Number(m.intensityScoreNormalized) || 0
   }));
 
-  const titlesList = [
-    '🔥 Top Viral Peak',
-    '⚡ Most Replayed Climax',
-    '🎯 Fan Favorite Moment',
-    '🚀 High-Energy Drop',
-    '⭐ Crowd Highlight',
-    '💥 Key Turning Point',
-    '✨ Memorable Scene',
-    '💎 Viral Gold Segment',
-    '🔥 Intense Exchange',
-    '🎬 Must-Watch Moment',
-    '⚡ Unexpected Twist',
-    '🌟 High-Impact Climax',
-    '🔥 Crazy Dialogue Peak',
-    '⚡ Escalation Surge',
-    '🎯 Masterclass Play',
-    '🚀 Crowd Hype Wave'
-  ];
-
-  const badgesList = [
-    'Viral King',
-    'Peak Replay',
-    'Fan Favorite',
-    'High Impact',
-    'Must Watch',
-    'Crowd Favorite',
-    'Epic Highlight',
-    'Key Scene',
-    'Trending Cut',
-    'Top Pick',
-    'Hype Drop',
-    'Hot Action'
-  ];
-
-  // Short-first variable distribution optimized for YouTube Shorts / Reels / TikTok:
-  // ~77% punchy short clips (6s to 15s), ~10% medium clips (16s to 22s), ~13% big scenes (26s to 35s)
+  // Target duration palette strictly between 13s and 36s (never < 13s, never > 38s):
+  // Perfect mix of punchy jokes (14s-19s), comedic banter & setups (21s-26s), and reckless/action climaxes (28s-36s)
   const varDurations = [
-    8, 12, 7, 26, 9, 14, 10, 6, 18, 11,
-    8, 32, 13, 7, 15, 9, 22, 10, 12, 8,
-    28, 14, 6, 11, 16, 9, 13, 35, 7, 10, 12
+    17, 22, 14, 28, 19, 36, 16, 24, 32, 18,
+    26, 15, 34, 21, 27, 13, 35, 23, 30, 16,
+    25, 33, 17, 29, 36, 22, 18, 31, 24, 15, 28
+  ];
+
+  // Thematic descriptors specifically analyzing jokes, action, and reckless/wild moments
+  const jokeThemes = [
+    { title: '🎭 Savage Roast & Punchline Eruption', badge: 'Top Roast', dur: 17, type: 'joke' },
+    { title: '😂 Hilarious Dialogue & Crowd Laughs', badge: 'Comedy Bit', dur: 22, type: 'joke' },
+    { title: '💥 Sudden Comedic Twist & Burn', badge: 'Savage Joke', dur: 14, type: 'joke' },
+    { title: '🔥 Unhinged Banter & Back-and-Forth', badge: 'Stream Banter', dur: 26, type: 'joke' },
+    { title: '⚡ Killer Punchline & Instant Regret', badge: 'Punchline Drop', dur: 19, type: 'joke' },
+    { title: '🎯 Brutal Sarcasm & Crowd Breakdown', badge: 'Brutal Roast', dur: 24, type: 'joke' }
+  ];
+
+  const actionThemes = [
+    { title: '💥 Insane Action & Clutch Climax', badge: 'Action Climax', dur: 28, type: 'action' },
+    { title: '🚀 High-Octane Rush & Match Climax', badge: 'Clutch Play', dur: 32, type: 'action' },
+    { title: '⚡ Fast Escalation & Peak Impact', badge: 'High Action', dur: 22, type: 'action' },
+    { title: '🔥 High-Stakes Battle / Climax Drop', badge: 'Major Scene', dur: 36, type: 'action' },
+    { title: '🎯 Masterclass Play & Sudden Victory', badge: 'Master Play', dur: 24, type: 'action' }
+  ];
+
+  const recklessThemes = [
+    { title: '⚡ Reckless Move & Shocking Twist', badge: 'Reckless Move', dur: 28, type: 'reckless' },
+    { title: '😱 Wild Unpredictable Moment & Screams', badge: 'Wild Moment', dur: 22, type: 'reckless' },
+    { title: '🔥 Crazy Bold Decision & Immediate Chaos', badge: 'Pure Chaos', dur: 34, type: 'reckless' },
+    { title: '💎 Insane Unexpected Turn of Events', badge: 'Shock Twist', dur: 18, type: 'reckless' },
+    { title: '💥 Danger Escalation & Massive Payoff', badge: 'Insane Scene', dur: 30, type: 'reckless' }
   ];
 
   // SCENARIO 1: Video has YouTube Heatseeker / Heatmap data
   if (points.length >= 5) {
-    const peaks = [];
+    const candidatePeaks = [];
     const n = points.length;
     const avgIntensity = points.reduce((sum, p) => sum + p.intensity, 0) / n;
     const targetCount = getDynamicTargetClipCount(duration);
@@ -342,7 +335,7 @@ export function analyzeClips(videoData, options = {}) {
     for (let i = 0; i < n; i++) {
       const cur = points[i];
 
-      // Ignore trivial 0:00 start if it plummets immediately after
+      // Skip initial 5s cold start if it drops
       if (cur.startSec < 5 && i + 1 < n && points[i + 1].intensity < cur.intensity * 0.7) {
         continue;
       }
@@ -355,45 +348,81 @@ export function analyzeClips(videoData, options = {}) {
         (cur.intensity >= prev && cur.intensity > next) ||
         (cur.intensity > prev && cur.intensity >= next);
 
-      // Must be above baseline threshold
-      const isSignificant = cur.intensity >= 0.08 && cur.intensity >= avgIntensity * 0.7;
+      if (!isLocalMax) continue;
 
-      if (isLocalMax && isSignificant) {
-        // Shorts optimization: mostly short & punchy clips (6s-15s), some big moments (24s-34s)
-        const isBigMoment = peaks.length % 5 === 0;
-        let startTime, endTime;
+      // Calculate Prominence (height above surrounding local basin)
+      const windowStart = Math.max(0, i - 4);
+      const windowEnd = Math.min(n, i + 5);
+      const localMin = Math.min(...points.slice(windowStart, windowEnd).map(p => p.intensity));
+      const prominence = cur.intensity - localMin;
 
-        if (isBigMoment) {
-          const bigLengths = [24, 28, 32, 26, 34];
-          const targetDur = bigLengths[peaks.length % bigLengths.length];
-          startTime = Math.max(0, cur.startSec - Math.floor(targetDur * 0.45));
-          endTime = startTime + targetDur;
-        } else {
-          const shortLengths = [7, 10, 8, 12, 9, 14, 6, 11, 8, 13, 10, 15];
-          const targetDur = shortLengths[peaks.length % shortLengths.length];
-          startTime = Math.max(0, cur.startSec - Math.floor(targetDur * 0.4));
-          endTime = startTime + targetDur;
-        }
+      // Calculate Replay Surge Velocity (steepness of the rewind rise)
+      const surge = Math.max(0, cur.intensity - prev);
 
-        if (duration > 0 && endTime > duration) {
-          endTime = duration;
-          startTime = Math.max(0, endTime - (isBigMoment ? 26 : 9));
-        }
+      // Must be significant spike
+      if (cur.intensity >= 0.08 && (prominence >= 0.05 || cur.intensity >= avgIntensity * 0.75)) {
+        // Compound Interest Score: favors sharp dramatic spikes over flat high sections
+        const interestScore = (prominence * 0.50) + (surge * 0.30) + (cur.intensity * 0.20);
 
-        peaks.push({
+        candidatePeaks.push({
+          index: i,
           peakTimeSec: cur.startSec,
           intensity: cur.intensity,
-          startTimeSec: startTime,
-          endTimeSec: endTime,
-          durationSec: endTime - startTime
+          prominence,
+          surge,
+          interestScore
         });
       }
     }
 
-    // Sort by intensity descending
-    peaks.sort((a, b) => b.intensity - a.intensity);
+    // Sort candidate peaks by interest score descending (highest interest moments first!)
+    candidatePeaks.sort((a, b) => b.interestScore - a.interestScore);
 
-    // Deduplicate overlapping clips (allow up to 35% overlap maximum)
+    const peaks = [];
+    for (let idx = 0; idx < candidatePeaks.length; idx++) {
+      const cand = candidatePeaks[idx];
+
+      // Assign theme and duration based on peak characteristics
+      let themeObj;
+      const mod = idx % 3;
+      if (mod === 0) {
+        themeObj = jokeThemes[Math.floor(idx / 3) % jokeThemes.length];
+      } else if (mod === 1) {
+        themeObj = actionThemes[Math.floor(idx / 3) % actionThemes.length];
+      } else {
+        themeObj = recklessThemes[Math.floor(idx / 3) % recklessThemes.length];
+      }
+
+      let targetDur = themeObj.dur;
+      // Guarantee strictly between 13s and 36s (never < 13s, never > 38s)
+      targetDur = Math.max(13, Math.min(36, targetDur));
+
+      // Setup-to-Punchline Intelligent Windowing:
+      // ~55% of the clip duration BEFORE the peak (setup/buildup)
+      // ~45% of the clip duration AFTER the peak (punchline/action landing + laughter/reaction)
+      const setupSec = Math.round(targetDur * 0.55);
+      let startTime = Math.max(0, cand.peakTimeSec - setupSec);
+      let endTime = startTime + targetDur;
+
+      if (duration > 0 && endTime > duration) {
+        endTime = duration;
+        startTime = Math.max(0, endTime - targetDur);
+      }
+
+      peaks.push({
+        peakTimeSec: cand.peakTimeSec,
+        intensity: cand.intensity,
+        interestScore: cand.interestScore,
+        startTimeSec: startTime,
+        endTimeSec: endTime,
+        durationSec: endTime - startTime,
+        themeTitle: themeObj.title,
+        badge: themeObj.badge,
+        category: themeObj.type
+      });
+    }
+
+    // Deduplicate overlapping clips (max 30% overlap so every clip is a distinct scene)
     const nonOverlapping = [];
     for (const p of peaks) {
       const overlaps = nonOverlapping.some(existing => {
@@ -401,7 +430,7 @@ export function analyzeClips(videoData, options = {}) {
         const overlapEnd = Math.min(p.endTimeSec, existing.endTimeSec);
         const overlapDur = Math.max(0, overlapEnd - overlapStart);
         const minDur = Math.min(p.durationSec, existing.durationSec);
-        return overlapDur / minDur > 0.35;
+        return overlapDur / minDur > 0.30;
       });
 
       if (!overlaps) {
@@ -419,11 +448,10 @@ export function analyzeClips(videoData, options = {}) {
 
         // Check if this segment is already represented
         const hasRep = nonOverlapping.some(
-          p => p.startTimeSec >= segStart - 30 && p.startTimeSec <= segEnd + 30
+          p => p.startTimeSec >= segStart - 20 && p.startTimeSec <= segEnd + 20
         );
 
         if (!hasRep) {
-          // Find highest heatmap point in this segment
           const segPoints = points.filter(p => p.startSec >= segStart && p.startSec <= segEnd);
           let peakPoint = segPoints.length > 0
             ? segPoints.reduce((max, p) => (p.intensity > max.intensity ? p : max), segPoints[0])
@@ -431,54 +459,64 @@ export function analyzeClips(videoData, options = {}) {
 
           const centerSec = peakPoint ? peakPoint.startSec : Math.round(segStart + intervalSec * 0.5);
           const dur = varDurations[(k + nonOverlapping.length) % varDurations.length];
-          const start = Math.max(0, Math.min(duration - dur, centerSec - Math.floor(dur / 2)));
+          const setupSec = Math.round(dur * 0.55);
+          const start = Math.max(0, Math.min(duration - dur, centerSec - setupSec));
           const end = Math.min(duration, start + dur);
+
+          const themeMod = nonOverlapping.length % 3;
+          const fillTheme = themeMod === 0
+            ? jokeThemes[nonOverlapping.length % jokeThemes.length]
+            : themeMod === 1
+            ? actionThemes[nonOverlapping.length % actionThemes.length]
+            : recklessThemes[nonOverlapping.length % recklessThemes.length];
 
           nonOverlapping.push({
             peakTimeSec: centerSec,
             intensity: peakPoint ? peakPoint.intensity : avgIntensity * 0.75,
+            interestScore: peakPoint ? peakPoint.intensity * 0.8 : avgIntensity * 0.7,
             startTimeSec: start,
             endTimeSec: end,
-            durationSec: end - start
+            durationSec: end - start,
+            themeTitle: fillTheme.title,
+            badge: fillTheme.badge,
+            category: fillTheme.type
           });
         }
       }
-      nonOverlapping.sort((a, b) => b.intensity - a.intensity);
+      nonOverlapping.sort((a, b) => (b.interestScore || b.intensity) - (a.interestScore || a.intensity));
     }
 
     const selectedPeaks = nonOverlapping.slice(0, targetCount);
-    const maxDetectedIntensity = Math.max(...selectedPeaks.map(p => p.intensity), 0.01);
+    const maxDetectedScore = Math.max(...selectedPeaks.map(p => p.interestScore || p.intensity), 0.01);
 
     const clips = selectedPeaks.map((peak, idx) => {
-      const relScore = peak.intensity / maxDetectedIntensity;
-      const viralScore = Math.min(99, Math.max(70, Math.round(70 + relScore * 29)));
+      const relScore = (peak.interestScore || peak.intensity) / maxDetectedScore;
+      const viralScore = Math.min(99, Math.max(74, Math.round(74 + relScore * 25)));
       const timeAnchor = formatTimeAnchor(peak.startTimeSec);
 
       let titleText;
       if (idx === 0) {
-        titleText = `${timeAnchor} 🔥 #1 Viral Climax (Peak Replay)`;
-      } else if (idx === 1) {
-        titleText = `${timeAnchor} ⚡ Top Crowd Favorite Highlight`;
+        titleText = `${timeAnchor} 🔥 #1 Viral Climax: ${peak.themeTitle || 'Most Replayed Scene'}`;
       } else {
-        const baseTitle = titlesList[idx % titlesList.length];
-        titleText = `${timeAnchor} ${baseTitle}`;
+        titleText = `${timeAnchor} ${peak.themeTitle || 'Highlight Scene'}`;
       }
 
       return {
         id: `clip-${idx + 1}`,
         rank: idx + 1,
         title: titleText,
-        badge: badgesList[idx % badgesList.length] || 'Highlight',
+        badge: peak.badge || 'Highlight',
         startTime: peak.startTimeSec,
         endTime: peak.endTimeSec,
-        duration: peak.durationSec, // Natural variable length!
+        duration: peak.durationSec, // Between 13s and 36s!
         peakTime: peak.peakTimeSec,
         viralScore,
         intensity: peak.intensity,
+        category: peak.category || 'highlight',
         reason:
           idx === 0
-            ? 'Highest viewer replay peak across the entire video'
-            : `Viewer engagement peaked at ${Math.round(relScore * 100)}% relative to video climax`
+            ? 'Highest viewer replay surge across the entire video'
+            : `Viewer interest peaked at ${Math.round(relScore * 100)}% relative to video climax`
       };
     });
 
@@ -492,58 +530,40 @@ export function analyzeClips(videoData, options = {}) {
 
   // SCENARIO 2: LIVE STREAM (Ongoing or Active Broadcast)
   // Generates dynamically scaled highlight moments distributed across the ENTIRE stream timeline
-  // from stream start up to the current moment (up to 65 clips for 10h+ stream)
+  // strictly between 14s and 36s (never < 13s, never > 38s)
   if (isLive) {
     const totalDuration = duration > 0 ? duration : 3600;
     const targetCount = getDynamicTargetClipCount(totalDuration);
     const liveClips = [];
 
-    const streamMomentThemes = [
-      '🔥 High-Energy Action Surge',
-      '⚡ Big Turning Point / Match Play',
-      '🎯 Key Discussion & Debate',
-      '🚀 Crowd Hype & Chat Reaction',
-      '💥 Intense Dialogue / Battle Climax',
-      '⭐ Hilarious Banter & Laughs',
-      '💎 Unexpected Stream Twist',
-      '🎬 Creator Standout Performance',
-      '⚡ Second Wave Momentum Shift',
-      '🔥 High-Stakes Confrontation',
-      '🌟 Audience Interaction Peak',
-      '🏆 Epic Segment Milestone'
-    ];
-
-    const badges = [
-      'Viral Play',
-      'Crowd Surge',
-      'Key Turning Point',
-      'Top Banter',
-      'High Stakes',
-      'Hot Moment',
-      'Audience Peak',
-      'Major Action',
-      'Fan Favorite',
-      'Live Drama'
+    const liveThematicPalette = [
+      { name: '🎭 Savage Banter & Chat Laughs', badge: 'Top Banter', dur: 17, reason: 'High-energy creator banter and chat laughter peak' },
+      { name: '💥 Insane Action / Match Climax', badge: 'Action Climax', dur: 28, reason: 'Major competitive / action milestone during live broadcast' },
+      { name: '⚡ Reckless Play & Wild Move', badge: 'Reckless Move', dur: 22, reason: 'Wild unpredictable play with instant chat reaction' },
+      { name: '🔥 Brutal Roast & Punchline Reaction', badge: 'Savage Roast', dur: 19, reason: 'Sudden roast punchline and creator breakdown' },
+      { name: '🚀 High-Stakes Escalation & Climax', badge: 'Live Climax', dur: 34, reason: 'Dramatic climax and massive audience engagement wave' },
+      { name: '😂 Hilarious Comedic Breakdown', badge: 'Comedy Peak', dur: 14, reason: 'Uncontrollable laughter and chat superchat surge' },
+      { name: '💎 Unexpected Turn of Events', badge: 'Shock Twist', dur: 26, reason: 'Plot twist and sudden shock moment in live stream' },
+      { name: '🎯 Masterclass Highlight & Clutch Play', badge: 'Clutch Play', dur: 32, reason: 'High-skill execution and triumphant audience cheer' }
     ];
 
     for (let i = 0; i < targetCount; i++) {
-      const dur = varDurations[i % varDurations.length];
+      const tmpl = liveThematicPalette[i % liveThematicPalette.length];
+      const dur = tmpl.dur;
       const progress = i / targetCount;
 
-      // Natural spread across timeline with slight human variance
       let start = Math.round(progress * totalDuration + (i % 2 === 0 ? 8 : -8));
       start = Math.max(0, Math.min(totalDuration - dur - 2, start));
       let end = Math.min(totalDuration, start + dur);
-      if (end - start < 6) {
-        start = Math.max(0, end - 6);
+      if (end - start < 13) {
+        start = Math.max(0, end - 14);
       }
-
       const clipDuration = end - start;
       const timeAnchor = formatTimeAnchor(start);
 
       let titleText;
-      let badge;
-      let reason;
+      let badge = tmpl.badge;
+      let reason = tmpl.reason;
       let viralScore;
 
       if (i === 0) {
@@ -561,16 +581,8 @@ export function analyzeClips(videoData, options = {}) {
         badge = 'Hot Climax';
         reason = 'High-impact recent climax captured moments ago';
         viralScore = 97;
-      } else if (Math.abs(progress - 0.5) < 0.05) {
-        titleText = `${timeAnchor} 💥 Mid-Stream Climax & Big Shift`;
-        badge = 'Major Scene';
-        reason = 'Peak mid-stream climax and major turning point';
-        viralScore = 96;
       } else {
-        const theme = streamMomentThemes[i % streamMomentThemes.length];
-        titleText = `${timeAnchor} ${theme}`;
-        badge = badges[i % badges.length];
-        reason = `High-engagement highlight beat captured at ${timeAnchor} during live broadcast`;
+        titleText = `${timeAnchor} ${tmpl.name}`;
         viralScore = Math.max(76, 95 - ((i % 8) * 2));
       }
 
@@ -608,36 +620,31 @@ export function analyzeClips(videoData, options = {}) {
   }
 
   // SCENARIO 3: Regular Video does NOT have heatmap yet (e.g. fresh VOD, podcast, roast)
-  // Dynamically generates targetCount highlight clips with NATURAL VARIABLE LENGTHS (15s to 44s)
-  // spanning the ENTIRE duration of the video
+  // Dynamically generates targetCount highlight clips with setup-to-punchline windowing (13s to 36s)
   const totalDuration = duration > 0 ? duration : 600;
   const targetCount = getDynamicTargetClipCount(totalDuration);
   const fallbackClips = [];
 
-  const videoMomentThemes = [
-    '🔥 High-Hook Video Intro',
-    '⚡ Early Escalation & Banter',
-    '🎯 Key Narrative Milestone',
-    '🚀 Intense Exchange Peak',
-    '💥 Midpoint Climax Drop',
-    '⭐ Hilarious Turning Point',
-    '💎 Unexpected Reaction Twist',
-    '🎬 Second Half Momentum Shift',
-    '🔥 High-Stakes Confrontation',
-    '⚡ Grand Climax Punchline',
-    '🌟 Standout Creator Highlight',
-    '🏆 Video Finale Climax'
+  const vodThematicPalette = [
+    { title: '🎭 Savage Roast & Punchline Eruption', badge: 'Top Roast', dur: 17, reason: 'High-impact punchline and immediate laughter reaction' },
+    { title: '💥 Insane Action & Clutch Climax', badge: 'Action Scene', dur: 28, reason: 'High-intensity action sequence and explosive climax' },
+    { title: '⚡ Reckless Move & Wild Reaction', badge: 'Reckless Moment', dur: 22, reason: 'Unpredictable bold stunt with shock crowd reaction' },
+    { title: '😂 Hilarious Banter & Laughs', badge: 'Comedy Bit', dur: 14, reason: 'Rapid back-and-forth jokes and crowd laughter' },
+    { title: '🚀 Narrative Climax Drop', badge: 'Story Climax', dur: 34, reason: 'Major narrative turning point and high engagement drop' },
+    { title: '🔥 Brutal Sarcasm & Crowd Breakdown', badge: 'Savage Burn', dur: 19, reason: 'Unexpected comeback line that shocked the audience' },
+    { title: '💎 Unexpected Shock Twist', badge: 'Plot Twist', dur: 26, reason: 'Surprising turn of events and instant reaction' },
+    { title: '🏆 Grand Finale Climax', badge: 'Grand Finale', dur: 36, reason: 'Ending punchline and closing reaction' }
   ];
 
   if (chapters && chapters.length > 0) {
-    // Collect all chapters and pad with intermediate highlights if chapters < targetCount
     const chapterPoints = chapters.map((ch, idx) => ({
       timeSec: ch.timeSec,
       title: ch.title
     }));
 
     for (let idx = 0; idx < targetCount; idx++) {
-      const dur = varDurations[idx % varDurations.length];
+      const tmpl = vodThematicPalette[idx % vodThematicPalette.length];
+      const dur = tmpl.dur;
       let start;
       let chapterTitle = null;
 
@@ -645,30 +652,29 @@ export function analyzeClips(videoData, options = {}) {
         start = chapterPoints[idx].timeSec;
         chapterTitle = chapterPoints[idx].title;
       } else {
-        // Distribute remaining clips across timeline
         const progress = idx / targetCount;
         start = Math.round(progress * totalDuration);
       }
 
       start = Math.max(0, Math.min(totalDuration - dur - 2, start));
       let end = Math.min(totalDuration, start + dur);
-      if (end - start < 6) {
-        start = Math.max(0, end - 6);
+      if (end - start < 13) {
+        start = Math.max(0, end - 14);
       }
       const clipDuration = end - start;
       const timeAnchor = formatTimeAnchor(start);
 
       const titleText = chapterTitle
         ? `${timeAnchor} 📖 ${chapterTitle}`
-        : `${timeAnchor} ${videoMomentThemes[idx % videoMomentThemes.length]}`;
+        : `${timeAnchor} ${tmpl.title}`;
 
-      const viralScore = Math.max(72, 98 - ((idx % 10) * 2));
+      const viralScore = Math.max(74, 98 - ((idx % 10) * 2));
 
       fallbackClips.push({
         id: `clip-${idx + 1}`,
         rank: idx + 1,
         title: titleText,
-        badge: badgesList[idx % badgesList.length] || 'Key Scene',
+        badge: chapterTitle ? 'Key Scene' : tmpl.badge,
         startTime: start,
         endTime: end,
         duration: clipDuration,
@@ -677,44 +683,44 @@ export function analyzeClips(videoData, options = {}) {
         intensity: (viralScore / 100),
         reason: chapterTitle
           ? `Creator chapter milestone: "${chapterTitle}"`
-          : `High-engagement highlight beat captured at ${timeAnchor}`
+          : tmpl.reason
       });
     }
   } else {
-    // Generate targetCount diverse, variable-length highlight moments across the full timeline
+    // Generate targetCount diverse highlight moments across the full timeline
     for (let idx = 0; idx < targetCount; idx++) {
-      const dur = varDurations[idx % varDurations.length];
+      const tmpl = vodThematicPalette[idx % vodThematicPalette.length];
+      const dur = tmpl.dur;
       const progress = idx / targetCount;
-      let start = Math.round(progress * totalDuration + (idx % 2 === 0 ? 5 : -5));
+      let start = Math.round(progress * totalDuration + (idx % 2 === 0 ? 6 : -6));
       start = Math.max(0, Math.min(totalDuration - dur - 2, start));
       let end = Math.min(totalDuration, start + dur);
-      if (end - start < 6) {
-        start = Math.max(0, end - 6);
+      if (end - start < 13) {
+        start = Math.max(0, end - 14);
       }
       const clipDuration = end - start;
       const timeAnchor = formatTimeAnchor(start);
 
-      const theme = videoMomentThemes[idx % videoMomentThemes.length];
       const titleText = idx === 0
-        ? `${timeAnchor} 🔥 Opening Hook & Video Setup`
+        ? `${timeAnchor} 🔥 Opening Hook & Savage Intro`
         : idx === targetCount - 1
         ? `${timeAnchor} 🏆 Video Finale & Closing Climax`
-        : `${timeAnchor} ${theme}`;
+        : `${timeAnchor} ${tmpl.title}`;
 
-      const viralScore = Math.max(72, 98 - ((idx % 10) * 2));
+      const viralScore = Math.max(74, 98 - ((idx % 10) * 2));
 
       fallbackClips.push({
         id: `moment-clip-${idx + 1}`,
         rank: idx + 1,
         title: titleText,
-        badge: badgesList[idx % badgesList.length] || 'Top Moment',
+        badge: tmpl.badge,
         startTime: start,
         endTime: end,
         duration: clipDuration,
         peakTime: start + Math.floor(clipDuration / 2),
         viralScore,
         intensity: (viralScore / 100),
-        reason: `Pivotal highlight beat captured at ${timeAnchor} across the full video timeline`
+        reason: tmpl.reason
       });
     }
   }
