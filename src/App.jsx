@@ -159,17 +159,17 @@ export default function App() {
                   Cliper
                 </h1>
                 <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 uppercase tracking-wide">
-                  Dynamic Clip Cutter
+                  Shorts & Highlight Cutter
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400 font-medium">Extracts All Highlight Moments in Maximum 1080p HD Quality (Variable Lengths)</p>
+              <p className="text-[11px] text-slate-400 font-medium">Extracts Shorts-Ready Highlight Moments in 1080p HD (Mostly 6s–15s, Some Big)</p>
             </div>
           </div>
 
           <div className="flex items-center gap-3">
             <span className="hidden sm:flex items-center gap-1.5 text-xs text-slate-400 px-3 py-1 rounded-full bg-slate-900 border border-slate-800">
               <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
-              Max Quality (1080p Full HD) • Variable Length (12s–45s)
+              Shorts-Ready (Mostly 6s–15s, Some Big) • 1080p Full HD
             </span>
           </div>
         </div>
@@ -181,14 +181,14 @@ export default function App() {
         <section className="flex flex-col items-center text-center max-w-3xl mx-auto w-full gap-4 pt-2">
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-purple-950/50 border border-purple-800/40 text-purple-300 text-xs font-semibold shadow-inner">
             <Zap className="w-3.5 h-3.5 text-cyan-400" />
-            Maximum Quality (1080p Full HD) • Variable Lengths (12s–45s) • Direct MP4 Downloads
+            Shorts-Optimized • Mostly Short & Punchy (6s–15s) with Selected Big Moments • 1080p HD
           </div>
 
           <h2 className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">
-            Extract <span className="bg-gradient-to-r from-purple-400 via-pink-400 to-amber-400 bg-clip-text text-transparent">All Viral Highlight Moments</span> in Maximum Quality
+            Extract <span className="bg-gradient-to-r from-purple-400 via-pink-400 to-amber-400 bg-clip-text text-transparent">Shorts-Ready Viral Clips</span> in Seconds
           </h2>
           <p className="text-sm text-slate-400 max-w-xl">
-            Paste any YouTube video or stream link. Cliper finds all interesting peaks across the video, cuts them into variable-length standalone video clips (12s to 45s) rendered in pristine 1080p Full HD, and hands you the ready-to-download MP4s!
+            Paste any YouTube video or stream link. Cliper cuts peak replay moments into viral Shorts-ready video clips (mostly punchy 6s to 15s clips, with occasional longer narrative moments), rendered in pristine 1080p Full HD with 9:16 vertical crop.
           </p>
 
           {/* Input Box */}
@@ -354,8 +354,8 @@ export default function App() {
                 </div>
                 <span className="text-xs text-slate-400">
                   {result.video.isLive
-                    ? 'Full broadcast timeline scanned • Variable lengths (15s–44s) • Queued & ready one-by-one'
-                    : 'Full video timeline scanned • Variable lengths (15s–44s) • Watch or download directly'}
+                    ? 'Full broadcast timeline scanned • Variable Shorts lengths (mostly 6s–15s, some big) • Queued & ready one-by-one'
+                    : 'Full video timeline scanned • Variable Shorts lengths (mostly 6s–15s, some big) • Watch or download directly'}
                 </span>
               </div>
 

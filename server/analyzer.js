@@ -324,7 +324,13 @@ export function analyzeClips(videoData, options = {}) {
     'Hot Action'
   ];
 
-  const varDurations = [18, 26, 34, 22, 42, 29, 36, 20, 44, 25, 38, 31, 23, 40, 27, 35, 19, 43, 30, 24];
+  // Short-first variable distribution optimized for YouTube Shorts / Reels / TikTok:
+  // ~77% punchy short clips (6s to 15s), ~10% medium clips (16s to 22s), ~13% big scenes (26s to 35s)
+  const varDurations = [
+    8, 12, 7, 26, 9, 14, 10, 6, 18, 11,
+    8, 32, 13, 7, 15, 9, 22, 10, 12, 8,
+    28, 14, 6, 11, 16, 9, 13, 35, 7, 10, 12
+  ];
 
   // SCENARIO 1: Video has YouTube Heatseeker / Heatmap data
   if (points.length >= 5) {
@@ -353,44 +359,25 @@ export function analyzeClips(videoData, options = {}) {
       const isSignificant = cur.intensity >= 0.08 && cur.intensity >= avgIntensity * 0.7;
 
       if (isLocalMax && isSignificant) {
-        // Dynamic variable window: follow the natural slope of the peak
-        let left = i;
-        while (left > 0 && points[left - 1].intensity >= cur.intensity * 0.45) {
-          left--;
-        }
-        let right = i;
-        while (right < n - 1 && points[right + 1].intensity >= cur.intensity * 0.45) {
-          right++;
-        }
+        // Shorts optimization: mostly short & punchy clips (6s-15s), some big moments (24s-34s)
+        const isBigMoment = peaks.length % 5 === 0;
+        let startTime, endTime;
 
-        // Natural start and end times with pre-roll build-up and post-roll reaction
-        let startTime = Math.max(0, points[left].startSec - 3);
-        let endTime = points[right].startSec + points[right].durationSec + 5;
-
-        if (duration > 0) {
-          endTime = Math.min(duration, endTime);
+        if (isBigMoment) {
+          const bigLengths = [24, 28, 32, 26, 34];
+          const targetDur = bigLengths[peaks.length % bigLengths.length];
+          startTime = Math.max(0, cur.startSec - Math.floor(targetDur * 0.45));
+          endTime = startTime + targetDur;
+        } else {
+          const shortLengths = [7, 10, 8, 12, 9, 14, 6, 11, 8, 13, 10, 15];
+          const targetDur = shortLengths[peaks.length % shortLengths.length];
+          startTime = Math.max(0, cur.startSec - Math.floor(targetDur * 0.4));
+          endTime = startTime + targetDur;
         }
 
-        let clipLength = endTime - startTime;
-
-        // Ensure variable length bounds: minimum 14s, maximum 44s (never over 45-50s)
-        if (clipLength < 14) {
-          const pad = 14 - clipLength;
-          startTime = Math.max(0, startTime - Math.floor(pad / 2));
-          endTime = startTime + 14;
-          if (duration > 0 && endTime > duration) {
-            endTime = duration;
-            startTime = Math.max(0, endTime - 14);
-          }
-        } else if (clipLength > 44) {
-          // Center around the peak and cap at 42-44s
-          const peakSec = cur.startSec;
-          startTime = Math.max(0, peakSec - 18);
-          endTime = startTime + 42;
-          if (duration > 0 && endTime > duration) {
-            endTime = duration;
-            startTime = Math.max(0, endTime - 42);
-          }
+        if (duration > 0 && endTime > duration) {
+          endTime = duration;
+          startTime = Math.max(0, endTime - (isBigMoment ? 26 : 9));
         }
 
         peaks.push({
@@ -545,10 +532,10 @@ export function analyzeClips(videoData, options = {}) {
 
       // Natural spread across timeline with slight human variance
       let start = Math.round(progress * totalDuration + (i % 2 === 0 ? 8 : -8));
-      start = Math.max(0, Math.min(totalDuration - dur - 4, start));
+      start = Math.max(0, Math.min(totalDuration - dur - 2, start));
       let end = Math.min(totalDuration, start + dur);
-      if (end - start < 14) {
-        start = Math.max(0, end - 18);
+      if (end - start < 6) {
+        start = Math.max(0, end - 6);
       }
 
       const clipDuration = end - start;
@@ -664,7 +651,10 @@ export function analyzeClips(videoData, options = {}) {
       }
 
       start = Math.max(0, Math.min(totalDuration - dur - 2, start));
-      const end = Math.min(totalDuration, start + dur);
+      let end = Math.min(totalDuration, start + dur);
+      if (end - start < 6) {
+        start = Math.max(0, end - 6);
+      }
       const clipDuration = end - start;
       const timeAnchor = formatTimeAnchor(start);
 
@@ -697,7 +687,10 @@ export function analyzeClips(videoData, options = {}) {
       const progress = idx / targetCount;
       let start = Math.round(progress * totalDuration + (idx % 2 === 0 ? 5 : -5));
       start = Math.max(0, Math.min(totalDuration - dur - 2, start));
-      const end = Math.min(totalDuration, start + dur);
+      let end = Math.min(totalDuration, start + dur);
+      if (end - start < 6) {
+        start = Math.max(0, end - 6);
+      }
       const clipDuration = end - start;
       const timeAnchor = formatTimeAnchor(start);
 
